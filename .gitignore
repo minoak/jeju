@@ -5,7 +5,7 @@ config.py
 app/*.html
 
 # 데이터 (golden·mock 제외 — 수작업/뼈대 자산은 커밋)
-data/raw/
+!data/raw/
 !data/processed/
 *.json
 !data/golden/*.json
