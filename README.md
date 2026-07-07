@@ -1,38 +1,62 @@
-# Jeju Trip 🍊
+# Jeju POP Trail 🍊
 
-유튜브 숏츠/영상 기반 제주 여행 RAG 서비스.
-질문을 던지면 실제 영상을 근거로 "오늘의 셋리스트(여행 코스)"를 발매합니다.
+유튜브 영상/숏츠 기반 **제주 카페 RAG 서비스**.
+질문을 던지면 실제 영상을 근거로 "오늘의 셋리스트(코스)"를 발매합니다.
 
 > **현재 상태 (2026-07-07)**
-> - **앱(Streamlit)**: mock 데이터로 **완전히 동작** — API 키 없이 바로 실행됩니다.
-> - **데이터**: 유튜브 크롤링 원본(raw) + 모델 정제본(processed)이 **git에 포함**되어 있어 `pull` 하면 바로 EDA 가능.
-> - **파이프라인 스크립트**: 아직 **빈 껍데기(스텁)**. 실제 수집·정제 코드는 `notebooks/데이터탐색.ipynb`에 있습니다. (아래 "파이프라인" 참고)
+> - **프론트(`web/`)**: 카카오맵 연동 + 검색 + 셋리스트가 구현된 **정본 프론트**. 정적 HTML+JS라 정적 서버만 있으면 바로 뜹니다.
+> - **데이터**: 크롤링 원본(raw) + 모델 정제본(processed)이 **git에 포함** — `pull` 하면 바로 EDA 가능.
+> - **RAG 백엔드**: 아직 **미연결**. 현재 프론트의 검색은 `web/cards.js`(정적 카드)를 클라이언트 JS로 필터링하는 mock입니다. 실 벡터검색·LLM은 다음 단계.
+> - **`app/main.py` (streamlit)**: 초기 프로토타입 — **지금 정본 아님**(참고용).
 
 ## 구조
 
 ```
-app/        서빙 (Streamlit) — 지금은 mock 카드로 동작, Cloud Run 배포 대상
+web/        ⭐ 정본 프론트 (HTML+JS) — 카카오맵 · 검색 · 셋리스트
+  index.html       랜딩 + 지역 지도 + 검색 UI
+  cards.js         카페 카드 데이터 (window.JEJU_CARDS · 지금은 정적 mock)
+  config.local.js  카카오 JS 키 주입 (gitignore · 각자 로컬 생성)
+app/        초기 streamlit 프로토타입 (참고용, 정본 아님)
 data/
-  raw/        유튜브 API 원본 json (git 포함, pull 하면 받아짐)
-  processed/  모델이 정제한 스팟 자료 json + 검수용 csv (git 포함)
-  mock/       앱이 실제로 읽는 샘플 카드 (cards.json)
+  raw/        유튜브 API 원본 json (git 포함)
+  processed/  모델 정제본 json + 검수용 csv (git 포함)
+  mock/       streamlit 프로토타입용 샘플 카드
   golden/     평가용 골든 질문셋
 pipeline/   수집→정제→병합→임베딩 배치 — ⚠️ 아직 스텁, 실코드는 notebooks/
 eval/       검색 품질 측정 (Hit@5)
 notebooks/  데이터탐색.ipynb — 실제 수집/정제 코드가 여기 있음
 ```
 
-## 빠른 시작 — 앱 띄우기 (키 불필요)
+## 빠른 시작 — 사이트 띄우기
 
-앱은 mock 데이터로 돌기 때문에 **API 키 없이 바로 실행**됩니다.
+`web/`은 정적 HTML+JS라 정적 서버만 있으면 됩니다.
 
-```bash
-pip install -r requirements.txt
-streamlit run app/main.py
+```powershell
+cd web
+python -m http.server 8503
 ```
 
-질문을 입력하거나 추천 칩을 누르면 mock 카드로 셋리스트가 발매됩니다.
-(앱이 읽는 건 `data/mock/cards.json` 하나뿐이라 다른 데이터가 없어도 동작합니다.)
+브라우저에서 **http://localhost:8503** 접속.
+
+- **카카오 키가 없어도 SVG 지도로 정상 동작**합니다(개발 기본값). 검색·셋리스트·지역 지도 다 됩니다.
+- 실제 카카오맵을 켜려면 아래 "카카오 실지도" 참고.
+
+> 포트를 `8503`으로 쓰는 건 카카오 JS 키가 `localhost:8503` 도메인에 등록돼 있기 때문입니다. **SVG 폴백만 쓸 거면 아무 포트나 괜찮습니다.**
+
+## 카카오 실지도 (선택)
+
+카카오맵 실지도는 **등록된 JS 키 + 도메인**에서만 뜹니다. 없으면 SVG 지도로 폴백되므로 개발에는 지장이 없습니다.
+
+실지도를 켜려면:
+
+1. [카카오 개발자 콘솔](https://developers.kakao.com)에서 앱 생성 → **JavaScript 키** 발급
+2. 그 앱의 *플랫폼 > Web > 사이트 도메인* 에 `http://localhost:8503` 등록 (+ 카카오맵 사용설정 ON)
+3. `web/config.local.js` 생성 (gitignore라 커밋 안 됨):
+   ```js
+   window.KAKAO_JS_KEY = "발급받은_JavaScript_키";
+   ```
+
+> 현재 프로젝트의 카카오 키는 특정 노트북/도메인에만 등록돼 있어, **다른 팀원은 각자 JS 키를 발급받거나 SVG 폴백으로 개발**하면 됩니다.
 
 ## 데이터 보기 / EDA
 
@@ -44,7 +68,7 @@ streamlit run app/main.py
 | `data/raw/raw_20260707_1006.json` | 유튜브 크롤링 원본 (전 카테고리) |
 | `data/processed/카페-전체자료.json` | 모델 정제본 |
 | `data/processed/카페-변환.json` | 모델 정제본 (스팟 카드 형태 — EDA에 적합) |
-| `data/processed/카페-csv.csv` | 검수용 표 (utf-8-sig) |
+| `data/processed/카페-csv.csv` | 검수용 표 (utf-8-sig, 엑셀용) |
 
 ## 파이프라인 (실데이터 재생성 — 아직 미구현)
 
@@ -57,6 +81,19 @@ streamlit run app/main.py
 5. `python pipeline/embed.py` — 임베딩 → `chroma_db/`
 
 > 재실행에는 API 키 3종 + 비용(~$2)·시간(1~2h)이 들고, 유튜브 결과는 시점 의존이라 완전히 똑같이는 재현되지 않습니다. 그래서 확보한 데이터를 git에 포함해 두었습니다.
+
+## 실 서비스로 가는 다음 관문
+
+현재 `web/`은 **프론트가 완성형이지만 검색이 mock**(클라이언트 JS가 `cards.js`를 필터링)입니다. 실 서비스로 키우려면:
+
+1. **실 데이터 카드**: 파이프라인 완성 → `cards.json` 산출 → `web/cards.js`를 실데이터로 교체
+2. **RAG 백엔드**: 벡터검색(Chroma) + LLM(질문분석·셋리스트 생성)을 API로 분리, 프론트가 호출
+3. **배포**: 정적 프론트 + 백엔드 API (Cloud Run 등), 카카오 도메인을 배포 도메인으로 등록
+
+## 이전 프로토타입 — streamlit
+
+`app/main.py`는 초기 streamlit 버전(다크 네온 K-POP 컨셉)입니다. 지금 정본은 `web/` 프론트이며, streamlit은 참고용으로만 남겨둡니다.
+실행(참고): `python -m streamlit run app/main.py` — mock 카드로 동작.
 
 ## 협업 규칙
 
