@@ -340,39 +340,57 @@ function initKakao(){
   s.id = 'kakao-sdk';
   s.onload = boot;
   s.onerror = () => console.warn('Kakao SDK 로드 실패 — 앱 키/도메인 등록 확인');
-  s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${key}&autoload=false`;
+  s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${key}&autoload=false&libraries=services`;
   document.head.appendChild(s);
 }
 function renderKakao(el){
   const kakao = window.kakao;
-  const map = new kakao.maps.Map(el, { center: new kakao.maps.LatLng(33.38,126.55), level:10 });
+  const map = new kakao.maps.Map(el, { center: new kakao.maps.LatLng(33.38,126.55), level:9 });
   el.style.display = 'block';
   document.getElementById('svgwrap').style.display = 'none';
   kakaoOn = true;
   setTimeout(() => map.relayout(), 60);
-  let overlay = null;
-  REGIONS.forEach(r => {
-    const pos = new kakao.maps.LatLng(r.coord[0], r.coord[1]);
-    const marker = new kakao.maps.Marker({ position:pos, map, title:r.name });
-    kakao.maps.event.addListener(marker, 'click', () => {
-      if (overlay) overlay.setMap(null);
-      overlay = new kakao.maps.CustomOverlay({ position:pos, content:buildOverlay(r), yAnchor:1.3, xAnchor:0.5, zIndex:10 });
-      overlay.setMap(map);
+
+  // 우리 카페(영상 근거)를 카카오 장소검색으로 실좌표 찾아 마커 + RAG 팝업
+  const ps = new kakao.maps.services.Places();
+  const bounds = new kakao.maps.LatLngBounds();
+  const cards = window.JEJU_CARDS || [];
+  let overlay = null, placed = 0;
+
+  cards.forEach(card => {
+    ps.keywordSearch(card.region + ' ' + card.spot_name, (data, status) => {
+      if (status !== kakao.maps.services.Status.OK || !data.length) return;
+      const pos = new kakao.maps.LatLng(data[0].y, data[0].x);
+      bounds.extend(pos);
+      const marker = new kakao.maps.Marker({ position:pos, map, title:card.spot_name });
+      kakao.maps.event.addListener(marker, 'click', () => {
+        if (overlay) overlay.setMap(null);
+        overlay = new kakao.maps.CustomOverlay({ position:pos, content:buildCafeOverlay(card, () => { if(overlay) overlay.setMap(null); }), yAnchor:1.32, xAnchor:0.5, zIndex:10 });
+        overlay.setMap(map);
+      });
+      if (++placed >= 2) map.setBounds(bounds);   // 카페들이 다 보이게 지도 범위 맞춤
     });
   });
 }
-function buildOverlay(r){
+function buildCafeOverlay(card, onClose){
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'width:300px;background:#fff;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.28);border:1px solid #ececec;overflow:hidden;font-family:var(--pt);color:#1d1d1f;text-align:left';
-  const spots = r.spots.map(s => `<div style="display:flex;gap:10px;align-items:center;background:#f5f5f7;border-radius:10px;padding:9px 11px;margin:0 14px 7px">
-      <div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600">${s.name}</div><div style="font-size:11px;color:#86868b;margin-top:2px">${s.tag}</div></div>
-      <div style="flex:none;font-size:12px;font-weight:600;color:#0071e3">근거 ${s.ev}편</div></div>`).join('');
-  wrap.innerHTML = `
-    <div style="padding:16px 18px 4px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-      <div><div style="font-size:19px;font-weight:600">${r.name}</div><div style="font-size:13px;color:#6e6e73;margin-top:3px">${r.tag}</div></div>
-    </div>
-    <div style="padding:10px 0 6px">${spots}</div>
-    <div style="padding:4px 14px 16px"><button style="width:100%;border:none;border-radius:11px;padding:11px;background:#0071e3;color:#fff;font-size:14px;font-weight:500;cursor:pointer">이 지역 코스 만들기</button></div>`;
+  wrap.style.cssText = 'width:280px;background:#fff;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.28);border:1px solid #ececec;overflow:hidden;font-family:var(--pt);color:#1d1d1f;text-align:left';
+  const vid = (card.video_ids && card.video_ids[0]) || '';
+  const thumb = vid
+    ? `<a href="https://www.youtube.com/watch?v=${vid}" target="_blank" rel="noopener" style="display:block"><div style="height:120px;background:url(https://img.youtube.com/vi/${vid}/mqdefault.jpg) center/cover;position:relative"><span style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px">▶ 근거 영상</span></div></a>`
+    : '';
+  const tags = (card.tags||[]).slice(0,3).map(t=>'#'+t).join(' ');
+  const sum = (card.summary||'');
+  wrap.innerHTML = thumb + `
+    <div style="padding:12px 14px 14px;position:relative">
+      <button data-x style="position:absolute;top:10px;right:10px;width:24px;height:24px;border:none;border-radius:50%;background:#f0f0f2;color:#6e6e73;font-size:14px;line-height:1;cursor:pointer">×</button>
+      <div style="font-size:16px;font-weight:700;padding-right:26px">${card.spot_name}</div>
+      <div style="font-size:11px;color:#86868b;margin:3px 0 6px">📍 ${card.region} · ${card.category} · <b style="color:#0071e3">영상 ${card.mention_count}편 근거</b></div>
+      <div style="font-size:11px;color:#8fb8ff;margin-bottom:6px">${tags}</div>
+      <div style="font-size:12px;line-height:1.5;color:#4a4a52">${sum.slice(0,92)}${sum.length>92?'…':''}</div>
+    </div>`;
+  const xb = wrap.querySelector('[data-x]');
+  if (xb && onClose) xb.addEventListener('click', onClose);
   return wrap;
 }
 
