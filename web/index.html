@@ -92,7 +92,15 @@
   .bubble-ai .txt{ font-size:16px; line-height:1.6 }
   .track{ display:flex; gap:18px; align-items:center; background:var(--panel); border-radius:16px; padding:14px 16px; margin-top:12px }
   .track .time{ flex:none; width:52px; text-align:center; font-family:var(--mono); font-size:15px; font-weight:700; color:var(--accent) }
-  .track .thumb{ width:130px; height:84px; flex:none; border-radius:12px; background-size:cover; background-position:center }
+  .track .thumb{ width:130px; height:84px; flex:none; border-radius:12px; overflow:hidden }
+  /* 유튜브 썸네일 로딩 상태 (트랙 카드 + 카카오 팝업 공유) — background는 로드 이벤트가 없어 <img>로 전환 */
+  .ytthumb{ position:relative; overflow:hidden; background:var(--panel) }
+  .ytthumb img{ width:100%; height:100%; object-fit:cover; display:block; opacity:0; transition:opacity .3s }
+  .ytthumb:not(.loading) img{ opacity:1 }              /* 로드되면 페이드인 */
+  .ytthumb.failed{ background:linear-gradient(135deg,#8ec5ff,#5b8def) }
+  .ytthumb .spin{ position:absolute; inset:0; margin:auto; width:22px; height:22px; border:3px solid rgba(0,0,0,.12); border-top-color:var(--accent); border-radius:50%; animation:ytspin .7s linear infinite }
+  .ytthumb:not(.loading) .spin{ display:none }          /* 로드/실패하면 스피너 숨김 */
+  @keyframes ytspin{ to{ transform:rotate(360deg) } }
   .track .body{ flex:1; min-width:0 }
   .track .body .tn{ font-size:19px; font-weight:600; letter-spacing:-.01em; margin-bottom:3px }
   .track .body .td{ font-size:14px; color:var(--sub); line-height:1.45 }
@@ -402,7 +410,7 @@ function plotCards(cards){
       const seed = seedByName[card.spot_name];
       if (seed) { lat = seed.lat; lng = seed.lng; }
     }
-    if (lat && lng) put(card, new kakao.maps.LatLng(lat, lng));   // 그래도 없으면 지도에서 제외
+    if (lat && lng) { card.lat = lat; card.lng = lng; put(card, new kakao.maps.LatLng(lat, lng)); }   // 좌표를 card에도 심음 → 팝업 '사진 보기' 버튼 표시 + /photos 정확 검색. 없으면 지도에서 제외
   });
   if (placed) jptMap.setBounds(bounds);
 }
@@ -411,12 +419,24 @@ function pickVideo(card){
   const v = (card && card.video_ids) || [];
   return v.length ? v[Math.floor(Math.random() * v.length)] : '';
 }
+// 유튜브 썸네일을 <img>로 로드 — 로딩중=스피너 / 성공=페이드인 / 실패=그라데이션 폴백
+// (background 방식은 로드 이벤트가 없어 상태 표시 불가 → <img> onload/onerror 사용)
+function ytThumbHTML(vid, cls, sizeStyle){
+  cls = cls || ''; const st = sizeStyle ? ` style="${sizeStyle}"` : '';
+  if(!vid) return `<div class="ytthumb failed ${cls}"${st}></div>`;   // 근거 영상 없음
+  return `<div class="ytthumb loading ${cls}"${st}><div class="spin"></div>`
+    + `<img src="https://img.youtube.com/vi/${vid}/mqdefault.jpg" alt=""`
+    + ` onload="this.parentNode.classList.remove('loading')"`
+    + ` onerror="this.parentNode.classList.remove('loading');this.parentNode.classList.add('failed');this.remove()"></div>`;
+}
 function buildCafeOverlay(card, onClose){
   const wrap = document.createElement('div');
   wrap.style.cssText = 'width:280px;background:#fff;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.28);border:1px solid #ececec;overflow:hidden;font-family:var(--pt);color:#1d1d1f;text-align:left';
   const vid = pickVideo(card);
   const thumb = vid
-    ? `<a href="https://www.youtube.com/watch?v=${vid}" target="_blank" rel="noopener" style="display:block"><div style="height:120px;background:url(https://img.youtube.com/vi/${vid}/mqdefault.jpg) center/cover;position:relative"><span style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px">▶ 근거 영상</span></div></a>`
+    ? `<a href="https://www.youtube.com/watch?v=${vid}" target="_blank" rel="noopener" style="display:block;position:relative">`
+      + ytThumbHTML(vid, '', 'height:120px')
+      + `<span style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px">▶ 근거 영상</span></a>`
     : '';
   const tags = (card.tags||[]).slice(0,3).map(t=>'#'+t).join(' ');
   const sum = (card.summary||'');
@@ -507,7 +527,6 @@ function trackHTML(t){
   const vid = pickVideo(c);
   const blogLink = (c.blog_links && c.blog_links[0]) || '';
   // MV 트랙(영상 有) vs 음원 트랙(블로그 근거) — 가짜 썸네일 금지, 그라데이션 폴백
-  const thumb = vid ? `background:url(https://img.youtube.com/vi/${vid}/mqdefault.jpg) center/cover` : 'background:linear-gradient(135deg,#8ec5ff,#5b8def)';
   const link = vid ? `https://www.youtube.com/watch?v=${vid}` : (blogLink || '#');
   const badge = vid ? '▶ 영상' : (blogLink ? '📝 후기' : '');
   const evidence = `차트인 ${c.mention_count}회` + (c.bloggers ? ` · 후기 ${c.bloggers}명` : '');
@@ -515,7 +534,7 @@ function trackHTML(t){
   return `<div class="track">
     <div class="time">${esc(t.time)}</div>
     <a href="${link}" target="_blank" rel="noopener" title="근거 보기" style="flex:none;display:block;position:relative">
-      <div class="thumb" style="${thumb}"></div>
+      ${ytThumbHTML(vid, 'thumb')}
       ${badge ? `<span style="position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:10px;font-weight:600;padding:2px 6px;border-radius:6px">${badge}</span>` : ''}
     </a>
     <div class="body"><div class="tn">${esc(c.spot_name)}</div><div class="td">${esc(t.why)}</div><div style="font-size:12px;color:#86868b;margin-top:4px">${tags}</div></div>
