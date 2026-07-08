@@ -16,6 +16,28 @@ __pycache__/
 venv/
 
 # 벡터DB (빌드 시 생성)
+chroma_db/
+chroma_smoke/
+
+# Generated enrichment outputs
+data/processed/blog_evidence_matched.jsonl
+data/processed/cafes_enriched.json
+data/processed/cafes_enriched_reviewed.json
+data/processed/promotion_candidates.json
+data/processed/promotion_candidates.csv
+data/processed/rag_docs.jsonl
+data/processed/rag_docs_review.jsonl
+data/processed/jeju-serving-ready.repaired.json
+data/processed/naver_cafes_retagged.jsonl
+data/processed/naver_tag_evidence.jsonl
+data/processed/naver_query_synonyms.json
+data/processed/naver_rag_docs_tag_only.jsonl
+data/processed/naver_rag_docs_review.jsonl
+data/processed/naver_place_enrichment_targets.csv
+data/processed/naver_rag_docs.jsonl
+data/processed/naver_tag_aliases.json
+data/processed/youtube_rag_support_docs.jsonl
+data/reports/
 
 # 로컬 카카오 키 주입 (각자 .env 로 생성, 절대 커밋 금지)
 web/config.local.js

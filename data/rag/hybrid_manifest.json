@@ -1,0 +1,42 @@
+{
+  "collection": "jeju_cafe_hybrid",
+  "embedding_seed": "data\\rag\\hybrid_embedding_seed.jsonl",
+  "input_naver_docs": 963,
+  "input_youtube_support_docs": 1062,
+  "inputs": [
+    "data\\processed\\naver_rag_docs.jsonl",
+    "data\\processed\\youtube_rag_support_docs.jsonl"
+  ],
+  "notes": [
+    "Naver Blog text is primary recommendation evidence.",
+    "YouTube support text is weak corroborating evidence.",
+    "Use metadata.has_naver=true for public recommendation filtering if needed."
+  ],
+  "seed_docs": 957,
+  "source_mix": {
+    "both": 857,
+    "youtube_only": 100
+  },
+  "top_tags": {
+    "가족": 46,
+    "감성": 678,
+    "노을": 46,
+    "대형": 243,
+    "디저트": 357,
+    "로컬": 162,
+    "바다": 160,
+    "베이커리": 365,
+    "브런치": 182,
+    "사진": 71,
+    "산뷰": 62,
+    "숨은": 53,
+    "시그니처": 89,
+    "애견": 230,
+    "오션뷰": 410,
+    "조용": 219,
+    "테라스": 218,
+    "핫플": 193,
+    "해변": 169,
+    "핸드드립": 45
+  }
+}

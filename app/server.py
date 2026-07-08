@@ -54,7 +54,7 @@ def _norm(s):
 def _blank():
     return {"tags": set(), "video_ids": [], "mention_count": 0,
             "summary_youtube": "", "summary_blog": "",
-            "blog_links": [], "bloggers": 0, "_rich": 9,
+            "blog_links": [], "bloggers": 0, "blog_tags_review": set(), "_rich": 9,
             "lat": None, "lng": None}
 
 def _load_aux():
@@ -82,7 +82,9 @@ def _load_aux():
             r = json.loads(line)
             a = aux.setdefault(r["spot_name"], _blank())
             a["summary_blog"] = r.get("summary_blog") or ""
-            a["tags"].update(r.get("tags_blog") or [])
+            # tags_blog is LLM-generated auxiliary evidence. Keep it out of
+            # serving tags so ambiguous blog categories do not affect ranking.
+            a["blog_tags_review"].update(r.get("tags_blog") or [])
             a["bloggers"] = r.get("bloggers_used", 0)
     # 블로그 링크 + 지역검색 좌표: 캐시(v2) 있으면 사용, 없으면 크롤링 원본에서 1회 추출
     cache = os.path.join(ROOT, "data", "processed", "카페부가v2.json")
