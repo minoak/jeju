@@ -265,6 +265,8 @@ const DEMO_TRACKS = [
 
 let selected = null;
 let kakaoOn = false;
+// 카카오 실지도 상태 — 검색 결과를 지도에 다시 찍기 위해 모듈 스코프로 보관
+let jptMap = null, jptPlaces = null, jptMarkers = [], jptOverlay = null;
 
 // ── SVG 폴백 지도: 핀 + 팝업 ──────────────────────────────────────────────
 function renderPins(){
@@ -345,30 +347,47 @@ function initKakao(){
 }
 function renderKakao(el){
   const kakao = window.kakao;
-  const map = new kakao.maps.Map(el, { center: new kakao.maps.LatLng(33.38,126.55), level:9 });
+  jptMap = new kakao.maps.Map(el, { center: new kakao.maps.LatLng(33.38,126.55), level:9 });
   el.style.display = 'block';
   document.getElementById('svgwrap').style.display = 'none';
   kakaoOn = true;
-  setTimeout(() => map.relayout(), 60);
+  setTimeout(() => jptMap.relayout(), 60);
+  jptPlaces = new kakao.maps.services.Places();
 
-  // 우리 카페(영상 근거)를 카카오 장소검색으로 실좌표 찾아 마커 + RAG 팝업
-  const ps = new kakao.maps.services.Places();
+  // 검색 전 기본 표시: 준비된 카페 전체를 지도에 찍음
+  plotCards(window.JEJU_CARDS || []);
+}
+
+// 지도의 마커·팝업을 모두 제거
+function clearMarkers(){
+  jptMarkers.forEach(m => m.setMap(null));
+  jptMarkers = [];
+  if (jptOverlay){ jptOverlay.setMap(null); jptOverlay = null; }
+}
+
+// 주어진 카드들을 카카오 장소검색으로 실좌표를 찾아 마커 + RAG 팝업으로 지도에 표시.
+// renderKakao(초기 표시)와 runSearch(검색 결과)가 공유 → 검색하면 지도가 이 함수로 갱신됨.
+function plotCards(cards){
+  if (!kakaoOn || !jptMap || !jptPlaces) return;   // 카카오 실지도일 때만 (SVG 폴백은 지역 핀 유지)
+  const kakao = window.kakao;
+  clearMarkers();
   const bounds = new kakao.maps.LatLngBounds();
-  const cards = window.JEJU_CARDS || [];
-  let overlay = null, placed = 0;
-
-  cards.forEach(card => {
-    ps.keywordSearch(card.region + ' ' + card.spot_name, (data, status) => {
+  let placed = 0;
+  (cards || []).forEach(card => {
+    jptPlaces.keywordSearch(card.region + ' ' + card.spot_name, (data, status) => {
       if (status !== kakao.maps.services.Status.OK || !data.length) return;
-      const pos = new kakao.maps.LatLng(data[0].y, data[0].x);
+      // 제주 밖 동명 가게 오탐 방지: 제주 주소를 우선 채택 (없으면 첫 결과)
+      const hit = data.find(d => (d.road_address_name || d.address_name || '').startsWith('제주')) || data[0];
+      const pos = new kakao.maps.LatLng(hit.y, hit.x);
       bounds.extend(pos);
-      const marker = new kakao.maps.Marker({ position:pos, map, title:card.spot_name });
+      const marker = new kakao.maps.Marker({ position:pos, map:jptMap, title:card.spot_name });
+      jptMarkers.push(marker);
       kakao.maps.event.addListener(marker, 'click', () => {
-        if (overlay) overlay.setMap(null);
-        overlay = new kakao.maps.CustomOverlay({ position:pos, content:buildCafeOverlay(card, () => { if(overlay) overlay.setMap(null); }), yAnchor:1.32, xAnchor:0.5, zIndex:10 });
-        overlay.setMap(map);
+        if (jptOverlay) jptOverlay.setMap(null);
+        jptOverlay = new kakao.maps.CustomOverlay({ position:pos, content:buildCafeOverlay(card, () => { if(jptOverlay) jptOverlay.setMap(null); }), yAnchor:1.32, xAnchor:0.5, zIndex:10 });
+        jptOverlay.setMap(jptMap);
       });
-      if (++placed >= 2) map.setBounds(bounds);   // 카페들이 다 보이게 지도 범위 맞춤
+      if (++placed >= 1) jptMap.setBounds(bounds);   // 찍힌 카페들이 다 보이게 범위 맞춤
     });
   });
 }
@@ -456,6 +475,7 @@ function runSearch(query){
   const sec = document.getElementById('resultSection');
   sec.style.display = 'block';
   sec.scrollIntoView({ behavior:'smooth', block:'start' });
+  plotCards(cards);   // 검색 결과를 지도에도 반영 (카카오 실지도일 때만 동작 · 화면은 셋리스트로 스크롤)
 }
 
 // ── 부팅 ─────────────────────────────────────────────────────────────────
