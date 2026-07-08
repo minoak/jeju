@@ -2,9 +2,12 @@
 """
 [파이프라인 계약] 임베딩 — 유튜브/블로그 정제본 → Chroma 적재 (+스모크 검증).
 
-입력:  data/processed/유튜브 정제.json     summary (high/mid, 빈 값 제외) → source=youtube
-       data/processed/네이버 정제.jsonl    summary_blog (빈 값·closed 제외) → source=blog
+입력:  data/processed/네이버 정제.jsonl    summary_blog (빈 값·closed 제외) → source=blog
+       data/processed/review_master.csv   판정=유지 카페만 편입 (보류/제외 차단)
 출력:  chroma_smoke/ 컬렉션 "smoke" (text-embedding-3-large, cosine)
+       ※ 서빙 코퍼스 결정(7/8): 팀원 병합 풀(hybrid, _hybrid_embed.py) + blog(유지).
+         우리 유튜브 문서는 은퇴 — 팀원 풀이 더 정확(검증됨)하다는 민옥 결정.
+         유튜브 요약은 hybrid의 텍스트 폴백으로만 사용.
        ※ 병합(merge.py) 완성 후 카드 단위 chroma_db/로 승격 예정 — 지금은 MVP용
 키:    .env OPENAI_KEY
 소비자: app/server.py (/search)
@@ -35,20 +38,23 @@ for line in open(os.path.join(ROOT, ".env"), encoding="utf-8"):
 client = OpenAI(api_key=env["OPENAI_KEY"])
 
 def build_docs():
+    import csv
     docs = []
+    # 지역 참조용 (문서로는 안 만듦 — 유튜브 문서 은퇴)
     spots = json.load(open(os.path.join(ROOT, "data", "processed", "유튜브 정제.json"), encoding="utf-8"))
     best = {}
     for s in spots:
         n = s["spot_name"]
         if n not in best or RICH_ORDER.get(s.get("info_richness"), 9) < RICH_ORDER.get(best[n].get("info_richness"), 9):
             best[n] = s
-    for n, s in best.items():
-        if (s.get("summary") or "").strip() and s.get("info_richness") in ("high", "mid"):
-            docs.append((f"yt::{n}", s["summary"],
-                         {"source": "youtube", "spot_name": n,
-                          "region": s.get("region") or "기타",
-                          "richness": s.get("info_richness")}))
+    # 판정=유지 화이트리스트
+    keep = set()
+    review = os.path.join(ROOT, "data", "processed", "review_master.csv")
+    for r in csv.DictReader(open(review, encoding="utf-8-sig")):
+        if r.get("판정") == "유지":
+            keep.add(r["카페명"])
     path = os.path.join(ROOT, "data", "processed", "네이버 정제.jsonl")
+    n_hold = 0
     for line in open(path, encoding="utf-8"):
         line = line.strip()
         if not line:
@@ -57,10 +63,14 @@ def build_docs():
         if not (r.get("summary_blog") or "").strip() or r.get("closed_hint"):
             continue
         n = r["spot_name"]
+        if n not in keep:
+            n_hold += 1
+            continue   # 보류/제외 판정 카페는 서빙 편입 안 함
         docs.append((f"blog::{n}", r["summary_blog"],
                      {"source": "blog", "spot_name": n,
                       "region": (best.get(n) or {}).get("region") or "기타",
                       "richness": r.get("info_richness_blog") or ""}))
+    print(f"판정 비유지로 차단: {n_hold}곳")
     return docs
 
 def embed_texts(texts, batch=100):
