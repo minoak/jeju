@@ -21,6 +21,8 @@
 import json
 import os
 import re
+import urllib.request
+import urllib.error
 
 import chromadb
 from fastapi import FastAPI
@@ -38,6 +40,7 @@ for line in open(os.path.join(ROOT, ".env"), encoding="utf-8"):
     k, _, v = line.partition("=")
     env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 client = OpenAI(api_key=env["OPENAI_KEY"])
+GKEY = env.get("API_KEY")  # 유튜브=구글 클라우드 키. Places 사진도 이 키로 (서버에서만, 브라우저 노출 없음)
 
 cdb = chromadb.PersistentClient(path=os.path.join(ROOT, "chroma_smoke"))
 col = cdb.get_collection("smoke")
@@ -138,6 +141,43 @@ def detect_region(q):
             return std
     return None
 
+
+def _places_photo_uris(name, lat, lng, place_id=None, limit=8):
+    """Places(New)로 카페 사진의 임시 URL 목록을 반환. place_id 있으면 Details, 없으면 이름+좌표 Text Search.
+    사진 id(photo name)는 저장 금지·만료 대상이라 매 호출마다 신선하게 얻어 임시 URL(photoUri)로 변환한다."""
+    if place_id:
+        req = urllib.request.Request(
+            "https://places.googleapis.com/v1/places/" + place_id,
+            headers={"X-Goog-Api-Key": GKEY, "X-Goog-FieldMask": "id,photos"})
+        d = json.load(urllib.request.urlopen(req, timeout=12))
+        pid, photos = d.get("id"), d.get("photos", [])
+    else:
+        payload = {"textQuery": (name or "") + " 제주 카페", "languageCode": "ko", "maxResultCount": 1}
+        if lat and lng:
+            payload["locationBias"] = {"circle": {"center": {"latitude": lat, "longitude": lng}, "radius": 600.0}}
+        req = urllib.request.Request(
+            "https://places.googleapis.com/v1/places:searchText",
+            data=json.dumps(payload).encode(), method="POST",
+            headers={"Content-Type": "application/json", "X-Goog-Api-Key": GKEY,
+                     "X-Goog-FieldMask": "places.id,places.photos"})
+        d = json.load(urllib.request.urlopen(req, timeout=12))
+        places = d.get("places", [])
+        if not places:
+            return None, []
+        pid, photos = places[0].get("id"), places[0].get("photos", [])
+    uris = []
+    for ph in photos[:limit]:
+        murl = ("https://places.googleapis.com/v1/" + ph["name"] +
+                "/media?maxWidthPx=800&skipHttpRedirect=true&key=" + GKEY)
+        try:
+            md = json.load(urllib.request.urlopen(murl, timeout=12))
+            if md.get("photoUri"):
+                uris.append(md["photoUri"])
+        except Exception:
+            pass
+    return pid, uris
+
+
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -182,6 +222,21 @@ def search(q: str, k: int = 8):
                       "bloggers": a.get("bloggers", 0),
                       "lat": a.get("lat"), "lng": a.get("lng")})
     return {"query": q, "region": region, "relaxed": relaxed, "cards": cards}
+
+@app.get("/photos")
+def photos(name: str, lat: float = None, lng: float = None, place_id: str = None):
+    """카페 구글 사진의 임시 URL 목록. 키는 서버에만 — 프론트엔 URL만 나감."""
+    if not GKEY:
+        return {"error": "no_api_key", "photos": []}
+    try:
+        pid, uris = _places_photo_uris(name, lat, lng, place_id)
+        return {"name": name, "place_id": pid, "photos": uris}
+    except urllib.error.HTTPError as e:
+        return {"error": "google_%d" % e.code,
+                "detail": e.read().decode("utf-8", "replace")[:200], "photos": []}
+    except Exception as e:
+        return {"error": type(e).__name__, "photos": []}
+
 
 @app.get("/health")
 def health():
