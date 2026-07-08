@@ -51,15 +51,19 @@ def _norm(s):
     s = _clean(s).split("(")[0]
     return re.sub(r"[^\w가-힣]", "", s.lower())
 
+def _blank():
+    return {"tags": set(), "video_ids": [], "mention_count": 0,
+            "summary_youtube": "", "summary_blog": "",
+            "blog_links": [], "bloggers": 0, "_rich": 9,
+            "lat": None, "lng": None}
+
 def _load_aux():
     aux = {}
     # 유튜브 정제: 대표 요약/태그/video_id/언급수
     spots = json.load(open(os.path.join(ROOT, "data", "processed", "유튜브 정제.json"), encoding="utf-8"))
     for s in spots:
         n = s["spot_name"]
-        a = aux.setdefault(n, {"tags": set(), "video_ids": [], "mention_count": 0,
-                               "summary_youtube": "", "summary_blog": "",
-                               "blog_links": [], "bloggers": 0, "_rich": 9})
+        a = aux.setdefault(n, _blank())
         a["mention_count"] += 1
         if s.get("video_id") and s["video_id"] not in a["video_ids"]:
             a["video_ids"].append(s["video_id"])
@@ -76,35 +80,45 @@ def _load_aux():
             if not line:
                 continue
             r = json.loads(line)
-            a = aux.setdefault(r["spot_name"], {"tags": set(), "video_ids": [], "mention_count": 0,
-                                                "summary_youtube": "", "summary_blog": "",
-                                                "blog_links": [], "bloggers": 0, "_rich": 9})
+            a = aux.setdefault(r["spot_name"], _blank())
             a["summary_blog"] = r.get("summary_blog") or ""
             a["tags"].update(r.get("tags_blog") or [])
             a["bloggers"] = r.get("bloggers_used", 0)
-    # 블로그 링크: 캐시 있으면 사용, 없으면 크롤링 원본에서 1회 추출
-    cache = os.path.join(ROOT, "data", "processed", "블로그링크.json")
+    # 블로그 링크 + 지역검색 좌표: 캐시(v2) 있으면 사용, 없으면 크롤링 원본에서 1회 추출
+    cache = os.path.join(ROOT, "data", "processed", "카페부가v2.json")
     if os.path.exists(cache):
-        links = json.load(open(cache, encoding="utf-8"))
+        extra = json.load(open(cache, encoding="utf-8"))
     else:
-        links = {}
-        raw = os.path.join(ROOT, "data", "raw", "네이버 크롤링.jsonl")
-        if os.path.exists(raw):
+        extra = {}
+        for raw_name in ("네이버 크롤링.jsonl", "네이버 재검색 크롤링.jsonl"):
+            raw = os.path.join(ROOT, "data", "raw", raw_name)
+            if not os.path.exists(raw):
+                continue
             for line in open(raw, encoding="utf-8", errors="replace"):
                 try:
                     rec = json.loads(line)
                 except Exception:
                     continue
-                key = _norm(rec["spot_name"])
+                key = _norm(rec.get("cleaned_name") or rec["spot_name"])
                 good = [it["link"] for it in rec.get("blog", {}).get("items", [])
                         if key and key in _norm(it.get("title", "") + it.get("description", ""))
                         and it.get("postdate", "") >= "20240101"][:3]
-                if good:
-                    links[rec["spot_name"]] = good
-            json.dump(links, open(cache, "w", encoding="utf-8"), ensure_ascii=False)
-    for n, ls in links.items():
+                e = extra.setdefault(rec["spot_name"], {"links": [], "lat": None, "lng": None})
+                if good and not e["links"]:
+                    e["links"] = good
+                loc = (rec.get("local", {}).get("items") or [{}])[0]
+                if loc.get("mapx") and loc.get("mapy") and e["lat"] is None:
+                    try:  # 네이버 mapx/mapy = WGS84 * 1e7
+                        e["lng"] = int(loc["mapx"]) / 1e7
+                        e["lat"] = int(loc["mapy"]) / 1e7
+                    except ValueError:
+                        pass
+        json.dump(extra, open(cache, "w", encoding="utf-8"), ensure_ascii=False)
+    for n, e in extra.items():
         if n in aux:
-            aux[n]["blog_links"] = ls
+            aux[n]["blog_links"] = e.get("links") or []
+            aux[n]["lat"], aux[n]["lng"] = e.get("lat"), e.get("lng")
+    # 좌표는 네이버 지역검색만 사용 (registry 좌표는 신뢰성 문제로 미사용 — 민옥 결정 2026-07-08)
     return aux
 
 AUX = _load_aux()
@@ -165,7 +179,8 @@ def search(q: str, k: int = 8):
                       "video_ids": a.get("video_ids", [])[:3],
                       "blog_links": a.get("blog_links", []),
                       "mention_count": a.get("mention_count", 0),
-                      "bloggers": a.get("bloggers", 0)})
+                      "bloggers": a.get("bloggers", 0),
+                      "lat": a.get("lat"), "lng": a.get("lng")})
     return {"query": q, "region": region, "relaxed": relaxed, "cards": cards}
 
 @app.get("/health")

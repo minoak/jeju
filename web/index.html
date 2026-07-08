@@ -477,6 +477,7 @@ async function apiSearch(query, topK){
     tags: c.tags || [], summary: c.summary_blog || c.summary_youtube || '',
     mention_count: c.mention_count || 0, video_ids: c.video_ids || [],
     blog_links: c.blog_links || [], sources: c.sources || [], bloggers: c.bloggers || 0,
+    lat: c.lat || null, lng: c.lng || null,
   }));
 }
 async function runSearch(query){
