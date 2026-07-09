@@ -595,36 +595,46 @@ def _llm_json(system, user, max_retry=2):
     return None
 
 
-_JUDGE_SYS = """제주 카페 검색 결과가 사용자 질문에 맞는지 판단해 json으로만 답해.
+_JUDGE_SYS = """제주 카페 검색 결과를 검토해서, 각 카페가 질문과 정말 연관 있는지 가려내고
+종합 판단을 json으로만 답해.
 
 ## 출력 스키마
-{"verdict": "충분" 또는 "부족" 또는 "무관", "drop": 완화할 조건어 문자열 또는 null, "reason": "한 문장"}
+{"keep": [질문과 연관 있는 카페명, ...], "verdict": "충분" 또는 "부족" 또는 "무관",
+ "drop": 완화할 조건어 문자열 또는 null, "reason": "한 문장"}
 
-## 기준
-- 충분: 결과가 질문 의도에 맞고 쓸 만하다.
-- 부족: 방향은 맞지만 후보가 너무 적거나 특정 선호 조건이 좁아 아쉽다. 이때 drop에
-  질문에 있던 '선호 조건어' 하나(분위기·뷰·메뉴 같은 완화 가능한 성질)를 넣어라.
-- 무관: 결과가 질문의 핵심 대상과 동떨어졌다(질문이 원하는 종류가 결과에 거의 없음). drop=null.
-- 지역·필수조건(주차·노키즈존 등)은 절대 drop 후보로 넣지 마라 — 완화 가능한 건 선호뿐.
-- 결과가 0곳이면 무관 또는 부족으로 판단하라.
-- 창의성 금지. 결과 목록에 있는 사실로만 판단."""
+## 검토 (keep) — 질문과 정말 맞는 것만 남긴다
+- 질문이 원하는 성질·대상(뷰·분위기·메뉴 등)을 실제로 갖춘 카페만 keep에 넣어라.
+- 원하는 성질이 없거나, 질문에 지역이 명시됐는데 명백히 다른 지역인 카페는 keep에서 빼라(삭제).
+- keep의 카페명은 목록의 '이름'만 정확히 써라. 뒤에 붙은 (지역)은 빼고 이름만.
+
+## 판단 (verdict) — keep을 기준으로
+- 충분: keep에 질문과 맞는 곳이 하나라도 있다 → 그것으로 답한다.
+- 부족: keep이 0곳이지만, 선호 조건(뷰·분위기·메뉴)을 하나 빼면 찾을 수 있을 듯하다. drop에 그 조건어.
+- 무관: keep이 0곳이고 완화해도 소용없다(질문이 카페와 거리가 멀거나, 그런 곳이 없다). drop=null.
+- 지역·필수조건(주차·노키즈존 등)은 절대 drop에 넣지 마라 — 완화 가능한 건 선호뿐.
+- 검색 결과가 애초에 0곳이면 keep=[], 부족 또는 무관.
+- 창의성 금지. 결과 목록의 사실로만 판단."""
 
 
 def judge(q, cards):
-    """결과 카드를 보고 충분/부족/무관 판단 (LLM 1회). 실패 무해 → '충분' 폴백."""
+    """결과를 검토(연관성 선별) + 종합 판단 (LLM 1회). 실패 무해 → 전체 유지·'충분' 폴백.
+    반환 keep: 질문과 연관 있는 카페명 목록 (None이면 검토 실패 → 필터 안 함)."""
     if cards:
         lines = []
         for i, c in enumerate(cards[:10], 1):
+            reg = c.get("region") or c.get("region_fine") or "지역미상"
             tags = " ".join(c.get("tags") or [])
             summ = (c.get("summary_blog") or "")[:50]
-            lines.append(f"{i}. {c['spot_name']} [{tags}] {summ}")
+            lines.append(f"{i}. {c['spot_name']} ({reg}) [{tags}] {summ}")
         user = f"질문: {q}\n결과 {len(cards)}곳:\n" + "\n".join(lines)
     else:
         user = f"질문: {q}\n결과: 0곳 (내부 데이터에서 못 찾음)"
     d = _llm_json(_JUDGE_SYS, user)
     if not d or d.get("verdict") not in ("충분", "부족", "무관"):
-        return {"verdict": "충분", "drop": None, "reason": "판단 실패 — 기존 결과 유지"}
-    return {"verdict": d["verdict"], "drop": d.get("drop"), "reason": d.get("reason", "")}
+        return {"verdict": "충분", "drop": None, "reason": "판단 실패 — 기존 결과 유지", "keep": None}
+    keep = d.get("keep")
+    return {"verdict": d["verdict"], "drop": d.get("drop"), "reason": d.get("reason", ""),
+            "keep": keep if isinstance(keep, list) else None}
 
 
 _SYNTH_SYS = """제주 카페 검색 결과를 근거로 답할 소개 한 줄과 카페별 추천 이유를 json으로 써.
@@ -694,9 +704,13 @@ _OUR_PIDS = set(str(p) for p in SPOT_PID.values() if p)  # 우리 코퍼스 plac
 
 
 def _kakao_to_cards(docs, limit=5):
-    """카카오 document → 프론트 카드 계약에 맞춘 외부 카드. 우리 코퍼스 중복(place_id) 제외."""
+    """카카오 document → 프론트 카드 계약에 맞춘 외부 카드.
+    주제 한정(카페): 카카오 category에 '카페'가 든 것만 — 노래방·볼링·승마·숙박 등은 제외.
+    (실측: 카페는 '음식점 > 카페 > …', 비카페는 '스포츠,레저 > 볼링' 식이라 '카페' 유무로 갈림)"""
     out = []
     for d in docs:
+        if "카페" not in (d.get("category_name") or ""):
+            continue  # 카페 아닌 장소(노래방·볼링장·승마장·펜션 등)는 주제 밖 — 버림
         pid = str(d.get("id") or "")
         if pid and pid in _OUR_PIDS:
             continue  # 이미 우리 데이터에 있는 곳 — 외부 폴백에서 제외
@@ -735,6 +749,16 @@ def run_agent(q, k=8):
 
     for _ in range(2):
         v = judge(q, cards)
+        # 검토: 질문과 연관 있는 카페만 남긴다 (LLM이 부적합 판정한 건 삭제 — "있는 걸 검토")
+        # keep 이름에 LLM이 '(지역)'을 덧붙이는 경우가 있어 괄호를 떼고 대조한다.
+        if v.get("keep") is not None and cards:
+            keep_clean = set(re.sub(r"\s*\([^)]*\)\s*$", "", str(x)).strip() for x in v["keep"])
+            kept = [c for c in cards if c["spot_name"] in keep_clean]
+            if len(kept) != len(cards):
+                trace.append({"step": "검토", "n": len(kept),
+                              "detail": f"{len(cards)}곳 중 {len(kept)}곳이 질문과 연관 "
+                                        f"(부적합 {len(cards) - len(kept)}곳 삭제)"})
+            cards = kept
         trace.append({"step": "판단", "detail": f"{v['verdict']} — {v['reason']}"})
         if v["verdict"] == "충분":
             break
