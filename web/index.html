@@ -87,8 +87,19 @@
   .photostrip{ width:min(1000px,90%); margin:24px auto 0 }
   .photostrip h4{ font-size:18px; font-weight:600; letter-spacing:-.01em; margin-bottom:12px }
   .photostrip .grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px }
-  .photostrip .grid img{ width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:12px; background:var(--panel); display:block }
+  .photostrip .grid img{ width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:12px; background:var(--panel); display:block; cursor:zoom-in; transition:transform .12s }
+  .photostrip .grid img:hover{ transform:scale(1.03) }
   .photostrip .grid a{ display:block; line-height:0 }
+
+  /* 사진 라이트박스 (사진 클릭 → 전체화면 크게 보기) */
+  #lightbox{ position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.92); backdrop-filter:blur(4px) }
+  #lightbox img{ max-width:92vw; max-height:88vh; border-radius:8px; box-shadow:0 20px 60px rgba(0,0,0,.55); cursor:default }
+  .lb-close{ position:absolute; top:20px; right:24px; width:44px; height:44px; border:none; border-radius:50%; background:rgba(255,255,255,.14); color:#fff; font-size:26px; line-height:1; cursor:pointer }
+  .lb-close:hover{ background:rgba(255,255,255,.28) }
+  .lb-nav{ position:absolute; top:50%; transform:translateY(-50%); width:52px; height:52px; border:none; border-radius:50%; background:rgba(255,255,255,.14); color:#fff; font-size:32px; line-height:1; cursor:pointer }
+  .lb-nav:hover{ background:rgba(255,255,255,.28) }
+  .lb-prev{ left:24px } .lb-next{ right:24px }
+  #lbCount{ position:absolute; bottom:24px; left:50%; transform:translateX(-50%); color:#fff; font-size:14px; background:rgba(0,0,0,.4); padding:5px 14px; border-radius:980px }
 
   .popup{ position:absolute; width:340px; z-index:20; }
   .popup .card{ background:#fff; border-radius:20px; box-shadow:0 24px 64px rgba(0,0,0,.30); border:1px solid #ececec; overflow:hidden; text-align:left }
@@ -118,6 +129,8 @@
   .bubble-ai .tag{ font-size:13px; font-weight:600; color:#b5651d; letter-spacing:.04em; margin-bottom:8px }
   .bubble-ai .txt{ font-size:16px; line-height:1.6 }
   .track{ display:flex; gap:18px; align-items:center; background:var(--panel); border-radius:16px; padding:14px 16px; margin-top:12px }
+  .track.clickable{ cursor:pointer; transition:background .15s, box-shadow .15s, transform .15s }
+  .track.clickable:hover{ background:#eaecef; box-shadow:0 8px 22px rgba(0,20,50,.10); transform:translateY(-1px) }
   .track .thumb{ width:130px; height:84px; flex:none; border-radius:12px; overflow:hidden }
   /* 유튜브 썸네일 로딩 상태 (트랙 카드 + 카카오 팝업 공유) — background는 로드 이벤트가 없어 <img>로 전환 */
   .ytthumb{ position:relative; overflow:hidden; background:var(--panel) }
@@ -264,6 +277,15 @@
 
 </div>
 
+<!-- 사진 라이트박스: 카페 사진 클릭 시 전체화면으로 크게 보기 (배경/× 클릭·ESC 닫기, ‹›·화살표키 순회) -->
+<div id="lightbox" onclick="closeLightbox()">
+  <button class="lb-close" onclick="closeLightbox()" aria-label="닫기">×</button>
+  <button class="lb-nav lb-prev" onclick="lbNav(-1,event)" aria-label="이전 사진">‹</button>
+  <img id="lbImg" onclick="event.stopPropagation()" alt="카페 사진 크게 보기">
+  <button class="lb-nav lb-next" onclick="lbNav(1,event)" aria-label="다음 사진">›</button>
+  <div id="lbCount"></div>
+</div>
+
 <script>
 // ── 지역 데이터 (지도용, 종합 여행 스팟) ──────────────────────────────────
 const REGIONS = [
@@ -288,6 +310,7 @@ let kakaoOn = false;
 let lastQuery = '';   // 파도4 '근거 보기'에서 마지막 질의 재사용
 // 카카오 실지도 상태 — 검색 결과를 지도에 다시 찍기 위해 모듈 스코프로 보관
 let jptMap = null, jptPlaces = null, jptMarkers = [], jptOverlay = null;
+let markerByIdx = {};   // 검색결과 카드 인덱스 → {pos, card} (카드 클릭 시 해당 마커로 점프하려고 색인)
 
 // ── SVG 폴백 지도: 핀 + 팝업 ──────────────────────────────────────────────
 function renderPins(){
@@ -359,7 +382,7 @@ function initKakao(){
 }
 function renderKakao(el){
   const kakao = window.kakao;
-  jptMap = new kakao.maps.Map(el, { center: new kakao.maps.LatLng(33.38,126.55), level:9 });
+  jptMap = new kakao.maps.Map(el, { center: new kakao.maps.LatLng(33.60,126.30), level:9 });   // center를 동남쪽으로 → 제주도가 화면 좌상단에 걸리게
   el.style.display = 'block';
   document.getElementById('svgwrap').style.display = 'none';
   kakaoOn = true;
@@ -369,47 +392,62 @@ function renderKakao(el){
   // 검색 전 기본 표시: 좌표 있는 카페 중 랜덤 10곳만 (전체를 찍으면 지도가 빽빽 → 새로고침마다 다른 '맛보기')
   const pool = (window.JEJU_CARDS || []).filter(c => c.lat && c.lng);
   for (let i = pool.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-  plotCards(pool.slice(0, 10));
+  plotCards(pool.slice(0, 10), false);   // 초기엔 제주도 전체 뷰 유지 (마커 범위로 줌인하지 않음)
 }
 
 // 지도의 마커·팝업을 모두 제거
 function clearMarkers(){
   jptMarkers.forEach(m => m.setMap(null));
   jptMarkers = [];
+  markerByIdx = {};
   if (jptOverlay){ jptOverlay.setMap(null); jptOverlay = null; }
+}
+
+// 카페 팝업 오버레이 열기 — 마커 클릭과 카드 클릭이 공유
+function openCafeOverlay(card, pos){
+  if (!kakaoOn || !jptMap) return;
+  if (jptOverlay) jptOverlay.setMap(null);
+  jptOverlay = new kakao.maps.CustomOverlay({ position:pos, content:buildCafeOverlay(card, () => { if(jptOverlay) jptOverlay.setMap(null); }), yAnchor:1.32, xAnchor:0.5, zIndex:10 });
+  jptOverlay.setMap(jptMap);
+}
+// 검색결과 카드 클릭 → 지도로 스크롤 + 해당 마커로 이동 + 팝업 열기
+function focusCafeOnMap(idx){
+  const m = markerByIdx[idx];
+  if (!m || !jptMap) return;   // 카카오 폴백(SVG)이거나 좌표 없는 카드는 무동작
+  document.getElementById('map').scrollIntoView({ behavior:'smooth', block:'start' });
+  jptMap.panTo(m.pos);
+  openCafeOverlay(m.card, m.pos);
 }
 
 // 주어진 카드들을 카카오 장소검색으로 실좌표를 찾아 마커 + RAG 팝업으로 지도에 표시.
 // renderKakao(초기 표시)와 runSearch(검색 결과)가 공유 → 검색하면 지도가 이 함수로 갱신됨.
-function plotCards(cards){
+// fit=true면 마커 범위에 맞춰 줌(검색 결과용), false면 현재 뷰 유지(초기 제주도 전체 표시용)
+function plotCards(cards, fit = true){
   if (!kakaoOn || !jptMap) return;   // 카카오 실지도일 때만 (SVG 폴백은 지역 핀 유지)
   const kakao = window.kakao;
   clearMarkers();
   const bounds = new kakao.maps.LatLngBounds();
   let placed = 0;
-  const put = (card, pos) => {
+  const put = (card, pos, idx) => {
     bounds.extend(pos);
     const marker = new kakao.maps.Marker({ position:pos, map:jptMap, title:card.spot_name });
     jptMarkers.push(marker);
-    kakao.maps.event.addListener(marker, 'click', () => {
-      if (jptOverlay) jptOverlay.setMap(null);
-      jptOverlay = new kakao.maps.CustomOverlay({ position:pos, content:buildCafeOverlay(card, () => { if(jptOverlay) jptOverlay.setMap(null); }), yAnchor:1.32, xAnchor:0.5, zIndex:10 });
-      jptOverlay.setMap(jptMap);
-    });
+    if (idx != null) markerByIdx[idx] = { pos, card };   // 검색결과 카드 클릭용 색인
+    kakao.maps.event.addListener(marker, 'click', () => openCafeOverlay(card, pos));
     placed++;
   };
   // 검색 결과 카드는 백엔드 lat/lng(네이버 지역검색 발, 881곳)를 직접 사용. 좌표 없는 카드만 cards.js 이름→좌표로 보충(폴백).
   const seedByName = {};
   (window.JEJU_CARDS||[]).forEach(c => { if (c.lat && c.lng && !seedByName[c.spot_name]) seedByName[c.spot_name] = c; });
-  (cards || []).forEach(card => {
+  (cards || []).forEach((card, idx) => {
     let lat = card.lat, lng = card.lng;
     if (!(lat && lng)) {                        // 백엔드가 좌표를 안 주면 cards.js에서 이름으로 보충
       const seed = seedByName[card.spot_name];
       if (seed) { lat = seed.lat; lng = seed.lng; }
     }
-    if (lat && lng) { card.lat = lat; card.lng = lng; put(card, new kakao.maps.LatLng(lat, lng)); }   // 좌표를 card에도 심음 → 팝업 '사진 보기' 버튼 표시 + /photos 정확 검색. 없으면 지도에서 제외
+    if (lat && lng) { card.lat = lat; card.lng = lng; put(card, new kakao.maps.LatLng(lat, lng), idx); }   // 좌표를 card에도 심음 → 팝업 '사진 보기' 버튼 표시 + /photos 정확 검색. 없으면 지도에서 제외
   });
-  if (placed) jptMap.setBounds(bounds);
+  if (placed && fit) jptMap.setBounds(bounds);   // 초기 표시(fit=false)는 제주도 전체 뷰 유지
 }
 // 카드의 근거 영상 여러 개 중 하나를 랜덤으로 고름 (호출할 때마다 새로 뽑아 중복 영상이 골고루 노출됨)
 function pickVideo(card){
@@ -467,8 +505,10 @@ async function loadCafePhotos(card){
       strip.innerHTML = `<div class="map-foot">${esc(card.spot_name)} 사진을 찾지 못했어요</div>`;
       return;
     }
-    const imgs = uris.slice(0, 8).map(u =>
-      `<div><img loading="lazy" src="${esc(u)}" alt="${esc(card.spot_name)} 사진"></div>`
+    const shown = uris.slice(0, 8);
+    photoList = shown;   // 라이트박스가 순회할 현재 사진 목록
+    const imgs = shown.map((u, i) =>
+      `<div><img loading="lazy" src="${esc(u)}" alt="${esc(card.spot_name)} 사진" onclick="openLightbox(${i})"></div>`
     ).join('');
     strip.innerHTML = `<h4>📷 ${esc(card.spot_name)} — 카페 사진</h4><div class="grid">${imgs}</div>
       <div class="map-foot" style="margin-top:8px">사진 제공: Google</div>`;
@@ -488,6 +528,26 @@ async function fetchPhotoUris(card){
   if (d.place_id) card.g_place_id = d.place_id;   // 세션 캐시(place_id 저장은 정책 허용)
   return d.photos || [];
 }
+
+// ── 사진 라이트박스 (그리드 사진 클릭 → 전체화면 크게 보기) ───────────────────
+let photoList = [];   // 현재 스트립에 표시된 사진 URL들 (라이트박스가 순회)
+let lbIdx = 0;
+function openLightbox(i){
+  if (!photoList.length) return;
+  lbIdx = (i + photoList.length) % photoList.length;   // 순환 인덱스 (끝↔처음)
+  document.getElementById('lbImg').src = photoList[lbIdx];
+  document.getElementById('lbCount').textContent = `${lbIdx + 1} / ${photoList.length}`;
+  document.getElementById('lightbox').style.display = 'flex';
+}
+function lbNav(dir, ev){ if (ev) ev.stopPropagation(); openLightbox(lbIdx + dir); }   // 배경 클릭(닫기)과 분리
+function closeLightbox(){ document.getElementById('lightbox').style.display = 'none'; }
+document.addEventListener('keydown', e => {
+  const lb = document.getElementById('lightbox');
+  if (!lb || lb.style.display !== 'flex') return;   // 라이트박스 열려 있을 때만 반응
+  if (e.key === 'Escape') closeLightbox();
+  else if (e.key === 'ArrowRight') lbNav(1);
+  else if (e.key === 'ArrowLeft') lbNav(-1);
+});
 
 // ── 검색 → 코스 (search.py / generate.py 를 JS 로 포팅 · mock 카페 카드) ──────
 const S_REGIONS = ['애월','성산','중문','제주시내','서귀포시내','구좌','한림','조천','세화','곽지','협재','김녕','함덕','월정'];
@@ -538,8 +598,10 @@ function trackHTML(t){
   const rt = RTONE[c.reaction_tone];
   const reaction = rt
     ? `<div style="font-size:12px;color:${rt.c};margin-top:5px">${rt.e} 여론 ${esc(c.reaction_tone)}${c.reaction_hint ? ` <span style="color:#86868b">· ${esc(c.reaction_hint)}</span>` : ''}</div>` : '';
-  return `<div class="track">
-    <a href="${link}" target="_blank" rel="noopener" title="근거 보기" style="flex:none;display:block;position:relative">
+  const clk = (t.idx != null);                 // 검색결과 카드만 클릭 가능 (초기 표시 카드는 idx 없음)
+  const hasLink = !!(vid || blogLink);         // 근거 링크(영상/후기) 유무
+  return `<div class="track${clk ? ' clickable' : ''}"${clk ? ` onclick="focusCafeOnMap(${t.idx})" title="지도에서 위치 보기"` : ''}>
+    <a href="${link}" target="_blank" rel="noopener" title="근거 보기" onclick="${hasLink ? 'event.stopPropagation()' : 'event.preventDefault()'}" style="flex:none;display:block;position:relative">
       ${ytThumbHTML(vid, 'thumb')}
       ${badge ? `<span style="position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:10px;font-weight:600;padding:2px 6px;border-radius:6px">${badge}</span>` : ''}
     </a>
@@ -613,7 +675,7 @@ async function runSearch(query){
   document.getElementById('resultIntro').textContent = intro;
   // 이유(why): 백엔드 reason 우선, 없으면 summary 첫 문장 폴백
   document.getElementById('resultTracks').innerHTML =
-    cards.map(c => trackHTML({ card:c, why:(c.reason || firstSentence(c.summary)) })).join('');
+    cards.map((c, i) => trackHTML({ card:c, why:(c.reason || firstSentence(c.summary)), idx:i })).join('');
   plotCards(cards);   // 검색 결과를 지도에도 반영 (카카오 실지도일 때만 동작 · 화면은 결과로 스크롤)
 }
 
