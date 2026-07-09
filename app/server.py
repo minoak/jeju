@@ -188,39 +188,87 @@ def _terms(q):
         out.append(sorted(stems, key=len))
     return out
 
-# ---- 어휘 매칭 게이트: 조건어가 카드 근거(태그·synonym·요약)에 실재하는가 ----
+# ---- 하드 배제: 쿼리 맥락이 특정 태그를 '금지'하는 경우 (완화 불가 — 하드조건 불가침) ----
+# tagdict.exclude_map()이 배제 규칙의 단일 창구. 현재 노키즈존만: 아이 동반 쿼리에서 배제.
+# 골드셋 G030("노키즈존 피하고 가족") Forbidden@5 100% 사건의 처방 — 배제는 지역완화보다
+# 우선하고 어떤 완화에도 안 풀린다 (아이 동반자에게 노키즈존을 대안이라 줄 수 없다).
+# "노키즈존 자체를 찾는" 쿼리(피하다 신호 없음)는 배제가 아니다 — 사용자가 원한 것.
+_KID_SIGNALS = ("아이", "아기", "애기", "유아", "애들", "아들", "딸", "가족", "아이랑", "아기랑", "애기랑")
+_AVOID_SIGNALS = ("피하", "말고", "빼고", "제외", "아닌", "싫", "없는", "안되는", "안 되는", "말 고")
+
+def detect_exclusions(q):
+    """쿼리에서 하드 배제할 태그 집합. 완화 사다리에서도 절대 안 풀린다."""
+    excl = set()
+    emap = tagdict.exclude_map()
+    if "노키즈존" in emap:
+        qn = _norm(q)
+        kid = any(s in q for s in _KID_SIGNALS) or ("키즈" in q and "노키즈" not in qn)
+        nokids_avoid = ("노키즈" in qn) and any(w in q for w in _AVOID_SIGNALS)
+        if kid or nokids_avoid:
+            excl.add("노키즈존")
+    return excl
+
+def _apply_exclusions(pool_names, excl_tags):
+    """이름 집합에서 배제 태그를 가진 카페 제거. (제거된 수, 남은 집합) 반환."""
+    if not excl_tags:
+        return 0, pool_names
+    kept = [n for n in pool_names
+            if not (set(CARDS.get(n, {}).get("tags") or []) & excl_tags)]
+    return len(pool_names) - len(kept), kept
+
+# ---- 태그 번역기 (exact→임베딩→unresolved). server client를 embed_fn으로 주입 ----
+# "선셋"은 synonym 정확매칭, "석양빛"은 태그사전 임베딩 최근접(0.55+), "물멍"은 unresolved.
+# 임베딩 공간엔 카페가 아니라 태그 표현 수십 개만 — 임베딩은 찾지 않고 번역한다.
+def _embed_one(text):
+    return client.embeddings.create(model="text-embedding-3-large", input=[text]).data[0].embedding
+
+try:
+    from app import tagtrans as _tagtrans_mod
+except ImportError:
+    import tagtrans as _tagtrans_mod
+_TAGTRANS = _tagtrans_mod.TagTranslator(embed_fn=_embed_one)
+print(f"[server] 태그 번역기: 활성 {len(tagdict.active_tags())}종, "
+      f"임베딩번역={'ON' if _TAGTRANS.embedding_ready else 'OFF(exact만 — tag_embed.py 미실행)'}")
+
+
+def resolve_terms(q):
+    """조건어 → 태그 번역 (임베딩은 사전 밖 term만, 카페 루프 밖 1회씩·tagtrans 내부 캐시).
+    반환: {groups, want(정규화 태그 집합), log(번역 내역=깔때기), unresolved(미해석 term)}."""
+    groups = _terms(q)
+    want, log, unresolved = set(), [], []
+    for group in groups:
+        term = max(group, key=len)  # 그룹의 원형(가장 긴 형태)로 번역
+        r = _TAGTRANS.translate(term)
+        log.append(r)
+        if r.get("tag"):
+            want.add(_norm(r["tag"]))
+        else:
+            unresolved.append(term)
+    return {"groups": groups, "want": want, "log": log, "unresolved": unresolved}
+
+
+# ---- 어휘 매칭 게이트: 조건어(→번역 태그)가 카드 근거에 실재하는가 ----
 # 임베딩은 짧은 "X 카페" 쿼리에서 유사도가 공통어 "카페"에 지배돼 무관 쿼리(승마·노래방)도
 # top을 채운다 (실측 2026-07-10: 노래방 0.244 > 오션뷰 0.209). 그래서 관련성의 기준을
-# 유사도가 아니라 "조건어가 근거에 실제로 있는가"로 둔다 — 근거가 하나도 없으면 침묵.
-# = 결정 6 "승마클럽 사건(표면 토큰 함정)"의 임베딩층 재현 방어. LLM 재작성의 코드 후임.
-_SYN2TAG = {}  # 정규화 표현 → 정규 태그 집합 (tag 자신 + synonyms). 강아지 → {애견동반}
-for _tg in tagdict.active_tags():
-    _SYN2TAG.setdefault(_norm(_tg), set()).add(_tg)
-    for _sy in tagdict.synonyms_of(_tg):
-        _SYN2TAG.setdefault(_norm(_sy), set()).add(_tg)
-
-def _grounded(canon, term_groups):
-    """카페 카드에 조건어(term_groups)가 근거로 실재하면 True (하나라도 있으면 = OR).
-    3경로: (a) synonym→정규태그 번역 후 카드 태그와 대조 (강아지→애견동반),
-           (b) 조건어가 카드 태그에 부분매칭 (오션뷰·노을 등 원명이 곧 태그),
-           (c) 조건어가 요약 본문에 등장 (베이글·밀크티 등 태그 사전 밖 유효조건)."""
+# 유사도가 아니라 "조건어가 근거에 실제로 있는가"로 둔다 — 근거가 없으면 침묵.
+# 3경로: (a) 번역된 요구 태그가 카드 태그에 실재 (exact synonym + 임베딩 번역 통합),
+#        (b) 조건어가 카드 태그에 부분매칭 (오션뷰·노을 등 원명이 곧 태그),
+#        (c) 조건어가 요약 본문에 등장 (베이글·밀크티 등 태그 사전 밖 유효조건).
+# = 결정 6 "승마클럽 사건(표면 토큰 함정)" 임베딩층 방어. 임베딩 유사도는 순위로만.
+def _grounded(canon, resolved):
     c = CARDS.get(canon)
     if not c:
         return False
     tags_norm = set(_norm(t) for t in (c.get("tags") or []))
+    if resolved["want"] & tags_norm:                            # (a) 번역 태그 실재
+        return True
     summ = c.get("summary") or ""
-    for group in term_groups:
-        want = set()
-        for s in group:
-            for w in _SYN2TAG.get(_norm(s), ()):
-                want.add(_norm(w))
-        if want & tags_norm:                                    # (a)
-            return True
-        for s in group:                                         # (b)
+    for group in resolved["groups"]:
+        for s in group:                                         # (b) 태그 부분매칭
             sn = _norm(s)
             if len(sn) >= 2 and any(sn in tn for tn in tags_norm):
                 return True
-        for s in group:                                         # (c)
+        for s in group:                                         # (c) 요약 등장
             if len(s) >= 2 and s in summ:
                 return True
     return False
@@ -462,6 +510,9 @@ def _search_core(q, k=8, debug=0):
     total = None
     emb_debug = None
     gated = 0  # 어휘 매칭 게이트로 걸러진 카페 수 (debug 관찰용)
+    excluded = 0  # 하드 배제(노키즈존 등)로 걸러진 카페 수
+    excl_tags = detect_exclusions(q)  # 배제 태그 집합 (browse·조건검색 공용)
+    resolved = {"groups": [], "want": set(), "log": [], "unresolved": []}  # 번역 로그(조건검색서 채움)
 
     if browse:
         # 브라우즈: 빈 질의는 유사도가 노이즈 — 임베딩 생략, 다수결(union 블로거) 정렬 (원칙 8)
@@ -469,6 +520,9 @@ def _search_core(q, k=8, debug=0):
         pool = []
         for n in SERVING:
             c = CARDS.get(n, {})
+            if excl_tags and (set(c.get("tags") or []) & excl_tags):
+                excluded += 1
+                continue  # 하드 배제 (아이 동반 → 노키즈존) — browse에서도 완화 불가
             b, f = c.get("region_bucket"), c.get("region_fine")
             if want_b:
                 if want_f and f == want_f:
@@ -512,11 +566,17 @@ def _search_core(q, k=8, debug=0):
         # 어휘 매칭 게이트: 조건어가 근거에 실재하는 카페만 남긴다 (임베딩 유사도는 순위로 강등).
         # pinned(이름 조회)는 예외 — 이미 ordered로 분리됨. 조건어 없으면 게이트 비활성(통과).
         # 전멸 시 pool=0 → 지역완화(relaxed)도 0 → cards 빈 배열 → 프론트가 "못 찾았어요"로 침묵.
-        term_groups = _terms(q)
-        if term_groups:
+        resolved = resolve_terms(q)
+        if resolved["groups"]:
             before = len(spots)
-            spots = {n: s for n, s in spots.items() if _grounded(n, term_groups)}
+            spots = {n: s for n, s in spots.items() if _grounded(n, resolved)}
             gated = before - len(spots)
+
+        # 하드 배제 (아이 동반 → 노키즈존 제거). 게이트 후·지역필터 전, 완화 불가.
+        # pinned(이름 조회)는 ordered로 이미 분리돼 여기 영향 없음 — 콕 집은 카페는 배제 면제.
+        if excl_tags:
+            excluded, kept = _apply_exclusions(list(spots.keys()), excl_tags)
+            spots = {n: spots[n] for n in kept}
 
         # 지역 필터 (카드 확정값 기준, 단계 완화: 세부 → 버킷 → 전체)
         def bf(n):
@@ -542,7 +602,9 @@ def _search_core(q, k=8, debug=0):
              for n, sc, src, nm in ordered]
 
     out = {"query": q, "region": region, "relaxed": relaxed, "browse": browse,
-           "total": total, "cards": cards}
+           "total": total, "cards": cards,
+           "translation": resolved["log"],      # 조건어→태그 번역 내역 ("이렇게 해석했어요")
+           "unresolved": resolved["unresolved"]}  # 미해석 조건 (정직한 실패 / grade 트리거 자리)
 
     # 디버깅 모드: 후보 소집~정렬을 유리상자로 (?debug=1) — LLM 관문은 은퇴, 감시 지점 소멸
     if debug:
@@ -550,6 +612,8 @@ def _search_core(q, k=8, debug=0):
             "route": "조회" if pinned else ("브라우즈" if browse else "조건"),
             "region": {"detected": region, "bucket": want_b, "fine": want_f, "relaxed": relaxed},
             "gated": gated,  # 어휘 매칭 게이트로 걸러진 무관 카페 수 (조건검색만)
+            "excluded": excluded,  # 하드 배제(노키즈존 등)로 걸러진 카페 수
+            "exclude_tags": sorted(excl_tags),  # 이 쿼리에서 배제된 태그
             "terms": _terms(q),
             "pinned": pinned,
             "embedding": ({"n_docs": len(emb_debug),
@@ -595,46 +659,36 @@ def _llm_json(system, user, max_retry=2):
     return None
 
 
-_JUDGE_SYS = """제주 카페 검색 결과를 검토해서, 각 카페가 질문과 정말 연관 있는지 가려내고
-종합 판단을 json으로만 답해.
+_JUDGE_SYS = """제주 카페 검색 결과가 사용자 질문에 맞는지 판단해 json으로만 답해.
 
 ## 출력 스키마
-{"keep": [질문과 연관 있는 카페명, ...], "verdict": "충분" 또는 "부족" 또는 "무관",
- "drop": 완화할 조건어 문자열 또는 null, "reason": "한 문장"}
+{"verdict": "충분" 또는 "부족" 또는 "무관", "drop": 완화할 조건어 문자열 또는 null, "reason": "한 문장"}
 
-## 검토 (keep) — 질문과 정말 맞는 것만 남긴다
-- 질문이 원하는 성질·대상(뷰·분위기·메뉴 등)을 실제로 갖춘 카페만 keep에 넣어라.
-- 원하는 성질이 없거나, 질문에 지역이 명시됐는데 명백히 다른 지역인 카페는 keep에서 빼라(삭제).
-- keep의 카페명은 목록의 '이름'만 정확히 써라. 뒤에 붙은 (지역)은 빼고 이름만.
-
-## 판단 (verdict) — keep을 기준으로
-- 충분: keep에 질문과 맞는 곳이 하나라도 있다 → 그것으로 답한다.
-- 부족: keep이 0곳이지만, 선호 조건(뷰·분위기·메뉴)을 하나 빼면 찾을 수 있을 듯하다. drop에 그 조건어.
-- 무관: keep이 0곳이고 완화해도 소용없다(질문이 카페와 거리가 멀거나, 그런 곳이 없다). drop=null.
-- 지역·필수조건(주차·노키즈존 등)은 절대 drop에 넣지 마라 — 완화 가능한 건 선호뿐.
-- 검색 결과가 애초에 0곳이면 keep=[], 부족 또는 무관.
-- 창의성 금지. 결과 목록의 사실로만 판단."""
+## 기준
+- 충분: 결과가 질문 의도에 맞고 쓸 만하다.
+- 부족: 방향은 맞지만 후보가 너무 적거나 특정 선호 조건이 좁아 아쉽다. 이때 drop에
+  질문에 있던 '선호 조건어' 하나(분위기·뷰·메뉴 같은 완화 가능한 성질)를 넣어라.
+- 무관: 결과가 질문의 핵심 대상과 동떨어졌다(질문이 원하는 종류가 결과에 거의 없음). drop=null.
+- 지역·필수조건(주차·노키즈존 등)은 절대 drop 후보로 넣지 마라 — 완화 가능한 건 선호뿐.
+- 결과가 0곳이면 무관 또는 부족으로 판단하라.
+- 창의성 금지. 결과 목록에 있는 사실로만 판단."""
 
 
 def judge(q, cards):
-    """결과를 검토(연관성 선별) + 종합 판단 (LLM 1회). 실패 무해 → 전체 유지·'충분' 폴백.
-    반환 keep: 질문과 연관 있는 카페명 목록 (None이면 검토 실패 → 필터 안 함)."""
+    """결과 카드를 보고 충분/부족/무관 판단 (LLM 1회). 실패 무해 → '충분' 폴백."""
     if cards:
         lines = []
         for i, c in enumerate(cards[:10], 1):
-            reg = c.get("region") or c.get("region_fine") or "지역미상"
             tags = " ".join(c.get("tags") or [])
             summ = (c.get("summary_blog") or "")[:50]
-            lines.append(f"{i}. {c['spot_name']} ({reg}) [{tags}] {summ}")
+            lines.append(f"{i}. {c['spot_name']} [{tags}] {summ}")
         user = f"질문: {q}\n결과 {len(cards)}곳:\n" + "\n".join(lines)
     else:
         user = f"질문: {q}\n결과: 0곳 (내부 데이터에서 못 찾음)"
     d = _llm_json(_JUDGE_SYS, user)
     if not d or d.get("verdict") not in ("충분", "부족", "무관"):
-        return {"verdict": "충분", "drop": None, "reason": "판단 실패 — 기존 결과 유지", "keep": None}
-    keep = d.get("keep")
-    return {"verdict": d["verdict"], "drop": d.get("drop"), "reason": d.get("reason", ""),
-            "keep": keep if isinstance(keep, list) else None}
+        return {"verdict": "충분", "drop": None, "reason": "판단 실패 — 기존 결과 유지"}
+    return {"verdict": d["verdict"], "drop": d.get("drop"), "reason": d.get("reason", "")}
 
 
 _SYNTH_SYS = """제주 카페 검색 결과를 근거로 답할 소개 한 줄과 카페별 추천 이유를 json으로 써.
@@ -704,13 +758,9 @@ _OUR_PIDS = set(str(p) for p in SPOT_PID.values() if p)  # 우리 코퍼스 plac
 
 
 def _kakao_to_cards(docs, limit=5):
-    """카카오 document → 프론트 카드 계약에 맞춘 외부 카드.
-    주제 한정(카페): 카카오 category에 '카페'가 든 것만 — 노래방·볼링·승마·숙박 등은 제외.
-    (실측: 카페는 '음식점 > 카페 > …', 비카페는 '스포츠,레저 > 볼링' 식이라 '카페' 유무로 갈림)"""
+    """카카오 document → 프론트 카드 계약에 맞춘 외부 카드. 우리 코퍼스 중복(place_id) 제외."""
     out = []
     for d in docs:
-        if "카페" not in (d.get("category_name") or ""):
-            continue  # 카페 아닌 장소(노래방·볼링장·승마장·펜션 등)는 주제 밖 — 버림
         pid = str(d.get("id") or "")
         if pid and pid in _OUR_PIDS:
             continue  # 이미 우리 데이터에 있는 곳 — 외부 폴백에서 제외
@@ -747,23 +797,12 @@ def run_agent(q, k=8):
     trace.append({"step": "검색", "n": len(cards), "detail": f"내부 코퍼스에서 {len(cards)}곳"})
     external = False
 
-    for attempt in range(2):
+    for _ in range(2):
         v = judge(q, cards)
-        # 검토: 질문과 연관 있는 카페만 남긴다 (LLM이 부적합 판정한 건 삭제 — "있는 걸 검토")
-        # keep 이름에 LLM이 '(지역)'을 덧붙이는 경우가 있어 괄호를 떼고 대조한다.
-        if v.get("keep") is not None and cards:
-            keep_clean = set(re.sub(r"\s*\([^)]*\)\s*$", "", str(x)).strip() for x in v["keep"])
-            kept = [c for c in cards if c["spot_name"] in keep_clean]
-            if len(kept) != len(cards):
-                trace.append({"step": "검토", "n": len(kept),
-                              "detail": f"{len(cards)}곳 중 {len(kept)}곳이 질문과 연관 "
-                                        f"(부적합 {len(cards) - len(kept)}곳 삭제)"})
-            cards = kept
         trace.append({"step": "판단", "detail": f"{v['verdict']} — {v['reason']}"})
-        if v["verdict"] == "충분" and cards:
+        if v["verdict"] == "충분":
             break
-        # 완화는 첫 시도에서만 (선호 조건 하나 빼고 재검색). 완화 후에도 안 맞으면 아래서 카카오로.
-        if attempt == 0 and v["verdict"] == "부족" and v.get("drop"):
+        if v["verdict"] == "부족" and v.get("drop"):
             q2 = _drop_condition(q, v["drop"])
             if q2 != q:
                 trace.append({"step": "완화", "detail": f"'{v['drop']}' 조건을 빼고 다시 찾음"})
@@ -771,15 +810,13 @@ def run_agent(q, k=8):
                 cards = out["cards"]
                 trace.append({"step": "재검색", "n": len(cards), "detail": f"{len(cards)}곳"})
                 continue
-        # 무관, 완화 불가, 또는 완화해도 연관 0 → 외부 검색(카카오, 카페만). 그것도 없으면 침묵.
+        # 무관, 또는 완화해도 소용없음 → 외부 검색(카카오)
         kcards = _kakao_to_cards(_kakao_search(_kakao_query(q)))
         if kcards:
             external = True
             cards = kcards
             trace.append({"step": "외부검색", "n": len(cards),
                           "detail": f"카카오맵에서 {len(cards)}곳"})
-        else:
-            cards = []  # 완화 재검색으로 딸려온 무관 결과를 남기지 않는다 — 정직한 침묵
         break
 
     # 종합
