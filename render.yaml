@@ -1,0 +1,19 @@
+# Render Blueprint — 대시보드에서 "New +" > "Blueprint" 로 이 GitHub 레포를 연결하면 자동 설정됨.
+# 키(OPENAI_KEY 등)는 보안상 여기 값으로 넣지 않고, 대시보드에서 직접 입력한다(sync: false).
+services:
+  - type: web
+    name: jeju-cafe
+    runtime: docker            # 루트의 Dockerfile 로 빌드
+    plan: free                 # 무료 티어 (512MB RAM · 15분 무활동 시 슬립)
+    region: singapore          # 아시아 리전 (한국에서 가장 가까움)
+    healthCheckPath: /health   # 서버가 살아있는지 Render 가 확인하는 경로
+    autoDeploy: true           # main 브랜치 푸시하면 자동 재배포 (= 깃허브 연동)
+    envVars:
+      - key: OPENAI_KEY        # 임베딩용 — 대시보드에서 입력
+        sync: false
+      - key: API_KEY           # 구글(유튜브/Places 사진)용 — 대시보드에서 입력
+        sync: false
+      - key: KAKAO_JS_KEY      # 지도 표시용(브라우저 노출·카카오 콘솔 도메인 등록으로 보호)
+        sync: false
+      - key: CHROMA_COLLECTION
+        value: cards           # 서빙 컬렉션 (회귀 시 smoke 로 교체)

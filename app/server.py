@@ -31,18 +31,28 @@ import urllib.error
 import chromadb
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ---- .env ----
+# ---- 키 로딩: 로컬은 .env 파일, 배포(Render 등)는 프로세스 환경변수 ----
+# 우선순위: 환경변수 > .env 파일. Render엔 .env 파일이 없고 키를 환경변수로 주입한다.
 env = {}
-for line in open(os.path.join(ROOT, ".env"), encoding="utf-8"):
-    line = line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    k, _, v = line.partition("=")
-    env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+_envfile = os.path.join(ROOT, ".env")
+if os.path.exists(_envfile):
+    for line in open(_envfile, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        env[k.strip()] = v.strip().strip('"').strip("'")
+for _k in ("OPENAI_KEY", "API_KEY", "KAKAO_KEY", "KAKAO_JS_KEY"):
+    if os.environ.get(_k):  # 환경변수가 있으면 우선 (배포)
+        env[_k] = os.environ[_k]
+if not env.get("OPENAI_KEY"):
+    raise RuntimeError("OPENAI_KEY 없음 — 로컬은 .env, 배포는 환경변수(Render)로 주입하세요")
 client = OpenAI(api_key=env["OPENAI_KEY"])  # 임베딩 전용 (생성 호출 없음)
 GKEY = env.get("API_KEY")  # 유튜브=구글 클라우드 키. Places 사진도 이 키로
 
@@ -501,3 +511,20 @@ def health():
     return {"ok": True, "docs": col.count(), "cafes": len(CARDS), "serving": len(SERVING),
             "place_id_map_size": len(SPOT_PID),
             "place_id_test": {n: SPOT_PID.get(n) for n in ("노을리", "노을리카페", "프릳츠커피")}}
+
+
+# ---- 정적 프론트 서빙 (배포: 프론트 + API 를 한 서버에서) ----
+# 로컬 개발 땐 프론트를 따로(:8503) 띄웠지만, 배포는 이 서버 하나가 web/ 도 서빙한다.
+WEB_DIR = os.path.join(ROOT, "web")
+
+@app.get("/config.local.js")
+def config_local_js():
+    """카카오맵 JS 키 주입 — config.local.js 는 gitignore 라 배포엔 파일이 없다.
+    환경변수 KAKAO_JS_KEY 를 브라우저로 내려준다(도메인 등록으로 보호되는 공개키). 없으면 SVG 지도 폴백."""
+    kjs = env.get("KAKAO_JS_KEY", "")
+    return Response(f"window.KAKAO_JS_KEY = {json.dumps(kjs)};",
+                    media_type="application/javascript")
+
+# StaticFiles 마운트는 맨 마지막 — 위 API 라우트들이 먼저 매칭되고, 나머지 경로만 web/ 정적 파일로.
+if os.path.isdir(WEB_DIR):
+    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
