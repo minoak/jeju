@@ -1,0 +1,59 @@
+=== 파일럿 시작 23:14:22 ===
+### comments --pilot 30 ###
+[comments] 대상 영상 30개 (귀속 가능 영상 기준)
+  … 10/30
+  … 20/30
+  … 30/30
+[comments] 수율: 영상 30개 → 채택 인용 64건 (영상당 2.1건), 모호 귀속 폐기 3건
+
+== 통계 ==
+  emitted: 64
+  unverified: 1
+  malformed: 0
+  aspect_etc: 22
+  preset_override: 0
+  failed: 0
+  closure_hints: 4
+  (closure_hints → C:\Users\akals\Documents\GitHub\jeju\data\processed\폐업의심큐.jsonl 에 적재 — 검수 후 폐업제보 하드코딩 재료)
+  (unverified = 원문 부분문자열 검증 실패로 폐기 — LLM이 의역한 스팬)
+집계 완료 → C:\Users\akals\Documents\GitHub\jeju\data\processed\근거극성_집계.json
+  카페 18곳 / 태그 감사 대상 1건 (태그 있는데 con 증거 존재)
+  ⚠ 해지개: '베이커리' 태그 vs con 2건 (pro 0)
+### blog --pilot 10 ###
+[blog] 대상 10곳
+
+== 통계 ==
+  emitted: 29
+  unverified: 0
+  malformed: 0
+  aspect_etc: 13
+  preset_override: 0
+  failed: 0
+  closure_hints: 0
+집계 완료 → C:\Users\akals\Documents\GitHub\jeju\data\processed\근거극성_집계.json
+  카페 25곳 / 태그 감사 대상 3건 (태그 있는데 con 증거 존재)
+  ⚠ 해지개: '베이커리' 태그 vs con 2건 (pro 0)
+  ⚠ 제주다테이블: '브런치' 태그 vs con 1건 (pro 0)
+  ⚠ 제주다테이블: '조용함' 태그 vs con 1건 (pro 0)
+### kakao --pilot 10 ###
+[kakao] 대상 8곳
+
+== 통계 ==
+  emitted: 190
+  unverified: 1
+  malformed: 0
+  aspect_etc: 30
+  preset_override: 18
+  failed: 0
+  closure_hints: 0
+  (unverified = 원문 부분문자열 검증 실패로 폐기 — LLM이 의역한 스팬)
+집계 완료 → C:\Users\akals\Documents\GitHub\jeju\data\processed\근거극성_집계.json
+  카페 27곳 / 태그 감사 대상 7건 (태그 있는데 con 증거 존재)
+  ⚠ 해지개: '베이커리' 태그 vs con 2건 (pro 0)
+  ⚠ 카페 오놀: '디저트' 태그 vs con 2건 (pro 7)
+  ⚠ 담소요: '감성' 태그 vs con 1건 (pro 4)
+  ⚠ 제주다테이블: '브런치' 태그 vs con 1건 (pro 0)
+  ⚠ 제주다테이블: '조용함' 태그 vs con 1건 (pro 0)
+  ⚠ MOUMOON (모우문): '오션뷰' 태그 vs con 1건 (pro 3)
+  ⚠ MOUMOON (모우문): '베이커리' 태그 vs con 1건 (pro 1)
+=== 파일럿 종료 23:18:28 ===

@@ -327,21 +327,25 @@ def _load_snippets():
           f"반응 {len(rx)}편, 카카오리뷰 {sum(len(v) for v in rv.values())}건/{len(rv)}카페")
 
 def _pick_review_quotes(reviews, terms, limit=3):
-    """카카오 리뷰 대표 인용 — 코드 선별. 질의 키워드 우선, 낮은 별점 하나 반드시 포함 (신뢰가 컨셉)."""
+    """카카오 리뷰 인용 — 좋아요(별점 4~5)·별로요(별점 1~3)를 '각각' limit개까지 뽑아 프론트가
+       방향별(👍/👎)로 나눠 표시. 질의 키워드 매칭 우선, 모자라면 키워드 무관 리뷰로 보충한다.
+       부정 여론이 인용 정원(옛 high2+low1)이나 키워드 필터에 지워지지 않게 — 신뢰가 컨셉."""
     def hit(t):
         return not terms or any(any(s in t for s in stems) for stems in terms)
-    cands = [r for r in reviews if (r.get("text") or "").strip() and hit(r["text"])]
-    if not cands:
-        return []
-    low = sorted([r for r in cands if (r.get("star") or 5) <= 3], key=lambda r: r.get("star") or 5)
-    high = [r for r in cands if (r.get("star") or 5) >= 4]
+    valid = [r for r in reviews if (r.get("text") or "").strip()]
+    def take(pool, n):   # 방향 안에서 키워드 매칭 먼저, 부족하면 나머지로 채움
+        pref = [r for r in pool if hit(r["text"])]
+        rest = [r for r in pool if not hit(r["text"])]
+        return (pref + rest)[:n]
+    low  = sorted([r for r in valid if (r.get("star") or 5) <= 3], key=lambda r: r.get("star") or 5)   # 낮은 별점 먼저
+    high = sorted([r for r in valid if (r.get("star") or 5) >= 4], key=lambda r: -(r.get("star") or 5))  # 높은 별점 먼저
     out, seen = [], set()
-    for r in ((high[:limit - 1] + low[:1]) if low else high[:limit]):
+    for r in take(high, limit) + take(low, limit):
         t = (r["text"] or "").strip().replace("\n", " ")
-        if t not in seen:
+        if t and t not in seen:
             seen.add(t)
             out.append({"text": t[:140], "star": r.get("star")})
-    return out[:limit]
+    return out
 
 def _pick_blog_quotes(rows, terms, limit=3):
     """블로그 스니펫 원문 발췌 — 키워드 매칭 문장, 블로거 다양성 우선. 발췌는 원문 그대로(지어내기 원천 차단)."""

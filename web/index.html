@@ -628,10 +628,16 @@ function searchCards(query, topK){
   pool.sort((a,b)=> (ov(b)-ov(a)) || (b.mention_count-a.mention_count));
   return pool.slice(0, topK);
 }
-function makeSetlist(query, cards){
+function makeSetlist(query, cards, region){
   const q = (query||'').trim();
+  // 지역 라벨은 '검색어에서 실제로 감지된 지역'(region)일 때만 붙인다.
+  // 예전엔 cards[0].region(유사도 1위 카드의 지역)을 검색 전체로 단정 → "승마 카페"에도 "제주 애월 코스"가 박혔다.
+  // 결과가 여러 지역에 흩어졌는데 1위 지역으로 라벨하는 건 근거 없는 지어내기 → 지역 없으면 라벨 생략.
+  const loc = (region || '').trim();
   return {
-    title: cards.length ? `제주 ${cards[0].region} 코스 · '${q}'` : `'${q}'`,
+    title: cards.length
+      ? (loc ? `제주 ${loc} 코스 · '${q}'` : `'${q}' 카페 ${cards.length}곳`)
+      : `'${q}'`,
     intro: cards.length ? `'${q}' 코스가 나왔어요. 총 ${cards.length}곳 🍊` : '조건에 맞는 스팟을 못 찾았어요. 다른 키워드로 검색해 보세요.',
     tracks: cards.map(c=>({ card:c, why:firstSentence(c.summary) })),
   };
@@ -733,7 +739,7 @@ async function runSearch(query){
   let res, live = true;
   // k=10 (민옥 요청 7/9: 5개는 부족). 브라우즈("애월 카페"류)면 백엔드가 12+로 늘려 보냄 (파도3)
   try { res = await apiSearch(query, 10); }
-  catch(e){ live = false; res = { cards: searchCards(query, 10), intro:'', browse:false, total:null, region:'', filtered:0 }; }   // 백엔드 꺼져 있으면 mock
+  catch(e){ live = false; res = { cards: searchCards(query, 10), intro:'', browse:false, total:null, region:(s_detectRegion(query)||''), filtered:0 }; }   // 백엔드 꺼져 있으면 mock (지역도 자체 감지 — 실서버 res.region과 제목 로직 일치)
   const cards = res.cards;
   searchWasLive = live;   // '근거 보기' 버튼 노출 여부 (mock엔 /evidence 없음)
   lastCards = cards;      // openEvidence(idx)가 조회
@@ -745,7 +751,7 @@ async function runSearch(query){
     title = res.total ? `${label} 카페 ${res.total}곳` : `${label} 카페 둘러보기`;
     intro = res.intro || `인기순으로 둘러보고 있어요 · ${cards.length}곳 표시`;
   } else {
-    const sl = makeSetlist(query, cards);
+    const sl = makeSetlist(query, cards, res.region);
     title = sl.title;
     intro = res.intro || sl.intro;   // 백엔드 LLM intro 우선, 없으면(explain=0·mock) 자체 문구
   }
