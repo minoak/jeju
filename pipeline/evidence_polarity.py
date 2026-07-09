@@ -230,9 +230,20 @@ def run_blog(names, done, fout, stats):
     print(f"[blog] 대상 {len(targets)}곳", flush=True)
     for idx, name in enumerate(targets, 1):
         pieces, refs = {}, {}
-        for j, it in enumerate(cafes[name], 1):
-            pieces[j] = clean(it.get("description", ""))
+        j = 0
+        for it in cafes[name]:
+            d = clean(it.get("description", ""))
+            # 완결문 필터 (7/9 실측: 스니펫 86%가 잘림, 21%가 해시태그 도배, 완결 후보 4%)
+            # 잘린 조각을 인용문처럼 내보내지 않는다 — 블로그의 몫은 인용이 아니라 표수와 요약
+            if not d or d.endswith("...") or d.endswith("…") or d.count("#") >= 3:
+                stats["blog_snippet_skipped"] += 1
+                continue
+            j += 1
+            pieces[j] = d
             refs[j] = it.get("link", "")
+        if not pieces:
+            stats["blog_no_quotable"] += 1
+            continue
         body = "\n".join(f"[{j}] {t}" for j, t in pieces.items() if t)
         msg = f"카페명: {name}\n출처: 네이버 블로그 검색 스니펫 (문장이 잘려 있을 수 있음 — 잘린 부분 추측 금지)\n\n{body}"
         result = call_llm(msg, f"blog:{name}")

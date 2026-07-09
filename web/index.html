@@ -185,6 +185,9 @@
   .ev-quote{ background:var(--panel); border-radius:12px; padding:11px 14px; font-size:13px; line-height:1.55; color:#33333a; margin-bottom:8px }
   .ev-quote.op{ background:#eef4ff; color:#1d3a63 }
   .ev-quote .star{ color:#f5a623; font-size:12px; margin-left:6px; white-space:nowrap; letter-spacing:1px }
+  /* 좋아요/별로요 바구니 안 소스 라벨 (⭐ 방문자 리뷰 / 🎬 쇼츠) — 방향은 바구니가, 출처는 라벨이 */
+  .ev-quote .src{ display:inline-block; font-size:11px; font-weight:700; color:#a1a1aa; margin-right:7px }
+  .ev-lens .lh.like{ color:#16a34a } .ev-lens .lh.dislike{ color:#dc2626 }
   .ev-react{ background:var(--panel); border-radius:12px; padding:11px 14px; margin-bottom:8px }
   .ev-react .rt{ font-size:13px; font-weight:700; margin-bottom:3px }
   .ev-react .rs{ font-size:13px; line-height:1.5; color:#4a4a52 }
@@ -653,17 +656,9 @@ function trackHTML(t){
     return parts.length ? `<div class="matched">${parts.join(' · ')}</div>` : '';
   })(c.matched);
   const tags = (c.tags||[]).slice(0,3).map(x=>'#'+esc(x)).join(' ');
-  // 파도2: 주의 신호(주차·웨이팅) / 영업시간 힌트 — 없으면 안 그림
-  const caution = (c.caution && c.caution.length)
-    ? `<div style="font-size:12px;color:#c2410c;margin-top:5px">⚠ ${c.caution.map(esc).join(' · ')}</div>` : '';
-  const hours = c.hours_hint
-    ? `<div style="font-size:12px;color:#86868b;margin-top:3px">🕒 ${esc(c.hours_hint)} <span style="color:#a1a1aa">· 참고용</span></div>` : '';
-  // 파도2 반응: 쇼츠 댓글 톤 뱃지(긍정😊/혼합😐/부정😞) + 한 줄 — 톤 없으면 안 그림, 부정·혼합도 그대로 노출(신뢰가 컨셉)
-  // ('쇼츠 반응'으로 명시 — 파도6의 카카오 '방문자 별점'과 다른 소스이므로 라벨로 구분)
-  const RTONE = { '긍정':{e:'😊',c:'#16a34a'}, '혼합':{e:'😐',c:'#a16207'}, '부정':{e:'😞',c:'#dc2626'} };
-  const rt = RTONE[c.reaction_tone];
-  const reaction = rt
-    ? `<div style="font-size:12px;color:${rt.c};margin-top:5px">${rt.e} 쇼츠 반응 ${esc(c.reaction_tone)}${c.reaction_hint ? ` <span style="color:#86868b">· ${esc(c.reaction_hint)}</span>` : ''}</div>` : '';
+  // (파도7 후속) 카드 밀도 축소: 쇼츠 여론 한 줄(reaction_hint=오프라인 gpt-5-mini 요약문)·caution·영업시간 등
+  //   '서술 텍스트'는 작은 카드에서 뺐다 → '근거 보기' 모달의 👍좋아요/👎별로요로 이관(원문 인용 우선).
+  //   카드엔 정량 신호(별점·영상수·matched)만. '화제≠만족'은 영상 N편 ↔ 별점 숫자 색대비로 남김.
   // 파도6: 카카오 방문자 별점 — 인기(영상 N편) 옆에 놓아 '화제 ≠ 만족' 가시화. null이면 안 그림
   const RVTONE = { '긍정':'#16a34a', '혼합':'#a16207', '부정':'#dc2626' };
   const reviewRate = (c.rating_avg != null)
@@ -678,7 +673,7 @@ function trackHTML(t){
       ${ytThumbHTML(vid, 'thumb')}
       ${badge ? `<span style="position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:10px;font-weight:600;padding:2px 6px;border-radius:6px">${badge}</span>` : ''}
     </a>
-    <div class="body"><div class="tn">${esc(c.spot_name)}${nameMatch}${closedBadge}</div><div class="td">${esc(t.why)}</div>${matched}<div style="font-size:12px;color:#86868b;margin-top:4px">${tags}</div>${reaction}${caution}${hours}${evBtn}</div>
+    <div class="body"><div class="tn">${esc(c.spot_name)}${nameMatch}${closedBadge}</div><div class="td">${esc(t.why)}</div>${matched}<div style="font-size:12px;color:#86868b;margin-top:4px">${tags}</div>${evBtn}</div>
     <div class="ev"><div class="n">${evidence}</div>${reviewRate}<div class="k">${esc(c.region)} · ${esc(c.category)}</div></div>
   </div>`;
 }
@@ -808,36 +803,31 @@ function renderEvidence(d){
   }
   document.getElementById('evTrust').innerHTML = trust.join('');
 
+  // 여론을 소스별이 아니라 '방향별'로 가른다: 👍좋아요 / 👎별로요 / 📝이런 곳이에요(블로그=정보, 방향 없음).
+  // 방향 판정은 지어내지 않고 원 신호로만 — 카카오 별점(4~5=좋아요, 1~3=별로요) + 쇼츠 톤(긍정/부정·혼합).
+  const rq = d.review_quotes || [];   // [{text, star}] 카카오 방문자 리뷰 원문
+  const yr = d.youtube_reactions || [];  // [{tone, summary}] 쇼츠 댓글 반응
+  const bq = d.quotes || [];          // 블로그 원문 발췌(코드 검증) — 방향 없는 정보
+  // 한 인용 렌더: 카카오는 원문+별점, 쇼츠는 반응 요약. 소스 라벨로 출처 구분.
+  const reviewHTML = r => {
+    const s = (r.star != null) ? Math.max(0, Math.min(5, Math.round(r.star))) : null;
+    const stars = (s != null) ? `<span class="star">${'★'.repeat(s)}${'☆'.repeat(5 - s)}</span>` : '';
+    return `<div class="ev-quote"><span class="src">⭐ 방문자 리뷰</span>“${esc(r.text)}”${stars}</div>`;
+  };
+  const shortHTML = r => `<div class="ev-quote"><span class="src">🎬 쇼츠 반응</span>${esc(r.summary || '')}</div>`;
+  // 방향별 분류 (별점 없는 리뷰·톤 없는 쇼츠는 방향 불명 → 어느 바구니에도 안 넣음)
+  const like  = rq.filter(r => r.star != null && r.star >= 4).map(reviewHTML)
+         .concat(yr.filter(r => r.tone === '긍정').map(shortHTML));
+  const dis   = rq.filter(r => r.star != null && r.star <= 3).map(reviewHTML)
+         .concat(yr.filter(r => r.tone === '부정' || r.tone === '혼합').map(shortHTML));
+  const lens = (cls, head, sub, items) => items.length
+    ? `<div class="ev-lens"><div class="lh ${cls}">${head} <span class="lt">${sub}</span></div>${items.join('')}</div>` : '';
   let html = '';
-  // 렌즈1 — 블로그(정보): LLM 의견 요약 + 원문 인용(코드 검증됨)
-  const bq = d.quotes || [];
-  html += `<div class="ev-lens"><div class="lh">📝 블로그 후기 <span class="lt">정보</span></div>`;
-  if (d.opinion) html += `<div class="ev-quote op">${esc(d.opinion)}</div>`;
-  if (bq.length) html += bq.map(t => `<div class="ev-quote">“${esc(t)}”</div>`).join('');
-  if (!d.opinion && !bq.length) html += `<div class="ev-empty">인용할 블로그 원문을 찾지 못했어요.</div>`;
-  html += `</div>`;
-  // 렌즈2 — 카카오 방문자 리뷰(검증): 별점 인용 (낮은 별점도 노출 — 신뢰가 컨셉)
-  const rq = d.review_quotes || [];
-  if (rq.length){
-    html += `<div class="ev-lens"><div class="lh">✅ 방문자 리뷰 <span class="lt">검증 · 카카오</span></div>`;
-    html += rq.map(r => {
-      const s = (r.star != null) ? Math.max(0, Math.min(5, Math.round(r.star))) : null;
-      const stars = (s != null) ? `<span class="star">${'★'.repeat(s)}${'☆'.repeat(5 - s)}</span>` : '';
-      return `<div class="ev-quote">“${esc(r.text)}”${stars}</div>`;
-    }).join('');
-    html += `</div>`;
-  }
-  // 렌즈3 — 쇼츠 댓글(반응): 톤 + 요약
-  const yr = d.youtube_reactions || [];
-  if (yr.length){
-    html += `<div class="ev-lens"><div class="lh">🎬 쇼츠 반응 <span class="lt">여론</span></div>`;
-    html += yr.map(r => {
-      const m = EV_TONE[r.tone] || { e:'💬', c:'#6e6e73' };
-      return `<div class="ev-react"><div class="rt" style="color:${m.c}">${m.e} ${esc(r.tone || '반응')}</div><div class="rs">${esc(r.summary || '')}</div></div>`;
-    }).join('');
-    html += `</div>`;
-  }
-  document.getElementById('evBody').innerHTML = html;
+  html += lens('like',    '👍 좋아요',      '방문자 별점·쇼츠 반응', like);
+  html += lens('dislike', '👎 별로요',      '방문자 별점·쇼츠 반응', dis);
+  html += lens('',        '📝 이런 곳이에요', '블로그 후기',
+               bq.map(t => `<div class="ev-quote">“${esc(t)}”</div>`));
+  document.getElementById('evBody').innerHTML = html || `<div class="ev-empty">아직 모은 후기가 없어요.</div>`;
 }
 function closeEvidence(){ document.getElementById('evModal').style.display = 'none'; }
 
