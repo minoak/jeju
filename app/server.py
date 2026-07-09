@@ -25,6 +25,8 @@
 import json
 import os
 import re
+import time
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -449,9 +451,9 @@ def evidence(name: str, q: str = ""):
     """카드 '근거 보기' — 실제 블로거 원문 인용 + 방문자 리뷰 + 쇼츠 댓글 반응 (전부 코드 발췌)."""
     return _evidence_impl(name, q)
 
-@app.get("/search")
-def search(q: str, k: int = 8, explain: int = 0, debug: int = 0):
-    # explain 파라미터는 하위호환으로 받기만 함 (LLM 층 은퇴 — 항상 결정적 응답)
+def _search_core(q, k=8, debug=0):
+    """임베딩+어휘게이트 검색 코어 — /search 엔드포인트와 /agent 판단 루프가 공유한다.
+    동작은 종전 /search와 동일 (추출 리팩터 — 회귀 없음)."""
     region = detect_region(q)
     want_b, want_f = _label_to_bf(region)
     pinned = name_lookup(q)  # 이름 조회는 임베딩보다 먼저, 결정적으로
@@ -557,6 +559,229 @@ def search(q: str, k: int = 8, explain: int = 0, debug: int = 0):
             "matched": {c["spot_name"]: c.get("matched") for c in cards if c.get("matched")},
         }
     return out
+
+@app.get("/search")
+def search(q: str, k: int = 8, explain: int = 0, debug: int = 0):
+    # explain은 하위호환으로 받기만 함 (LLM 층 은퇴). 코어에 그대로 위임.
+    return _search_core(q, k, debug)
+
+# ============================================================================
+# 에이전틱 판단 루프 (/agent) — LLM이 결과를 평가하고 부족/무관하면 완화·외부검색.
+# 신규 판단 노드는 judge 하나뿐. 완화·외부검색·종합은 코드가 실행(LLM은 판단·종합만).
+# 결정 28 정신 유지: LLM은 도구(검색)가 준 근거 위에서만 말한다.
+# ============================================================================
+def _llm_json(system, user, max_retry=2):
+    """gpt-5-mini json 호출 (router._llm_intent 패턴 미러). 실패 시 None — 실패 무해."""
+    for i in range(max_retry):
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-5-mini",
+                response_format={"type": "json_object"},
+                max_completion_tokens=4000,
+                reasoning_effort="minimal",
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user}],
+            )
+            content = resp.choices[0].message.content or ""
+            if not content.strip():
+                return None
+            d = json.loads(content)
+            return d if isinstance(d, dict) else None
+        except Exception as e:
+            if i == max_retry - 1:
+                print(f"[agent] LLM 실패 ({type(e).__name__}: {e})")
+                return None
+            time.sleep(2 ** i)
+    return None
+
+
+_JUDGE_SYS = """제주 카페 검색 결과가 사용자 질문에 맞는지 판단해 json으로만 답해.
+
+## 출력 스키마
+{"verdict": "충분" 또는 "부족" 또는 "무관", "drop": 완화할 조건어 문자열 또는 null, "reason": "한 문장"}
+
+## 기준
+- 충분: 결과가 질문 의도에 맞고 쓸 만하다.
+- 부족: 방향은 맞지만 후보가 너무 적거나 특정 선호 조건이 좁아 아쉽다. 이때 drop에
+  질문에 있던 '선호 조건어' 하나(분위기·뷰·메뉴 같은 완화 가능한 성질)를 넣어라.
+- 무관: 결과가 질문의 핵심 대상과 동떨어졌다(질문이 원하는 종류가 결과에 거의 없음). drop=null.
+- 지역·필수조건(주차·노키즈존 등)은 절대 drop 후보로 넣지 마라 — 완화 가능한 건 선호뿐.
+- 결과가 0곳이면 무관 또는 부족으로 판단하라.
+- 창의성 금지. 결과 목록에 있는 사실로만 판단."""
+
+
+def judge(q, cards):
+    """결과 카드를 보고 충분/부족/무관 판단 (LLM 1회). 실패 무해 → '충분' 폴백."""
+    if cards:
+        lines = []
+        for i, c in enumerate(cards[:10], 1):
+            tags = " ".join(c.get("tags") or [])
+            summ = (c.get("summary_blog") or "")[:50]
+            lines.append(f"{i}. {c['spot_name']} [{tags}] {summ}")
+        user = f"질문: {q}\n결과 {len(cards)}곳:\n" + "\n".join(lines)
+    else:
+        user = f"질문: {q}\n결과: 0곳 (내부 데이터에서 못 찾음)"
+    d = _llm_json(_JUDGE_SYS, user)
+    if not d or d.get("verdict") not in ("충분", "부족", "무관"):
+        return {"verdict": "충분", "drop": None, "reason": "판단 실패 — 기존 결과 유지"}
+    return {"verdict": d["verdict"], "drop": d.get("drop"), "reason": d.get("reason", "")}
+
+
+_SYNTH_SYS = """제주 카페 검색 결과를 근거로 답할 소개 한 줄과 카페별 추천 이유를 json으로 써.
+
+## 출력 스키마
+{"intro": "결과 전체를 요약하는 한 문장", "reasons": {"카페명": "추천 이유 한 문장", ...}}
+
+## 규칙
+- 제공된 카드의 태그·요약에 있는 사실만 사용. 없는 정보(주소·메뉴·평점·영업시간)를 지어내지 마.
+- 카페명은 제공된 것과 글자 그대로 일치시켜라.
+- intro는 담백한 한 문장. 과장·이모지·인사말 금지.
+- reasons는 결과에 있는 카페만. 근거가 빈약하면 태그를 담백히 옮겨라."""
+
+
+def synthesize_answer(q, cards):
+    """근거(태그·요약) 위에서 소개 + 카페별 이유 종합 (LLM 1회). 실패 시 None."""
+    lines = []
+    for c in cards[:10]:
+        tags = " ".join(c.get("tags") or [])
+        summ = (c.get("summary_blog") or "")[:80]
+        lines.append(f"- {c['spot_name']} [{tags}] {summ}")
+    user = f"질문: {q}\n카페들:\n" + "\n".join(lines)
+    return _llm_json(_SYNTH_SYS, user)
+
+
+def _drop_condition(q, drop):
+    """질의에서 완화 대상 조건어(및 짧은 어간)를 제거. 못 지우면 원 질의 그대로(→ 완화 무효)."""
+    if not drop:
+        return q
+    for token in [drop, drop[:-1] if len(drop) >= 3 else None]:
+        if token and token in q:
+            return re.sub(r"\s{2,}", " ", q.replace(token, "")).strip()
+    return q
+
+
+def _kakao_query(q):
+    """카카오 검색어 정제 — '카페' 등 일반어를 빼고 '제주 {핵심}'로.
+    실측: "제주 노래방 카페"→0건이지만 "제주 노래방"→노래방 5곳, "제주 승마"→승마장 5곳
+    (카카오는 문구 전체 매칭이라 '카페'가 붙으면 그 이름의 장소를 찾다 0건)."""
+    core = q
+    for w in ("카페", "커피", "맛집", "추천", "가볼만한", "곳"):
+        core = core.replace(w, "")
+    core = re.sub(r"\s{2,}", " ", core).strip()
+    return "제주 " + (core if core else q)
+
+
+def _kakao_search(q, size=5):
+    """카카오 로컬 키워드 검색 (kakao_place.py:kakao 로직 미러). 키 없거나 실패 시 []."""
+    key = env.get("KAKAO_KEY")
+    if not key:
+        return []
+    url = ("https://dapi.kakao.com/v2/local/search/keyword.json?size=%d&query=" % size
+           + urllib.parse.quote(q))
+    req = urllib.request.Request(url, headers={"Authorization": "KakaoAK " + key})
+    for i in range(3):
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=10)).get("documents", [])
+        except Exception as e:
+            if i == 2:
+                print(f"[agent] 카카오 검색 실패 ({type(e).__name__})")
+                return []
+            time.sleep(2 ** i)
+    return []
+
+
+_OUR_PIDS = set(str(p) for p in SPOT_PID.values() if p)  # 우리 코퍼스 place_id (중복 제거용)
+
+
+def _kakao_to_cards(docs, limit=5):
+    """카카오 document → 프론트 카드 계약에 맞춘 외부 카드. 우리 코퍼스 중복(place_id) 제외."""
+    out = []
+    for d in docs:
+        pid = str(d.get("id") or "")
+        if pid and pid in _OUR_PIDS:
+            continue  # 이미 우리 데이터에 있는 곳 — 외부 폴백에서 제외
+        addr = d.get("road_address_name") or d.get("address_name") or ""
+        cat = (d.get("category_name") or "").split(">")[-1].strip()
+        out.append({
+            "spot_name": d.get("place_name", ""),
+            "place_id": pid or None,
+            "score": 0.0, "sources": ["kakao"], "name_match": False,
+            "region": detect_region(addr) or "", "region_bucket": "", "region_fine": "",
+            "summary_blog": "", "summary_youtube": "",
+            "tags": [], "video_ids": [], "blog_links": [], "bloggers": 0, "mention_count": 0,
+            "address": addr, "category": cat or "장소",
+            "caution": [], "hours_hint": "",
+            "reaction_tone": "", "reaction_hint": "",
+            "rating_avg": None, "rating_count": None, "review_tone": "",
+            "closed": False, "matched": None,
+            "lat": (float(d["y"]) if d.get("y") else None),
+            "lng": (float(d["x"]) if d.get("x") else None),
+            "external": True, "reason": (cat + " · 카카오맵 검색 결과").strip(" ·"),
+            "place_url": d.get("place_url", ""),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def run_agent(q, k=8):
+    """판단 루프: 검색 → judge → (부족: 완화 재검색 / 무관·0건: 카카오) → 종합.
+    최대 2 루프. LLM은 판단(judge)·종합(synthesize)에만, 나머지는 결정적 코드."""
+    trace = []
+    out = _search_core(q, k)
+    cards = out["cards"]
+    trace.append({"step": "검색", "n": len(cards), "detail": f"내부 코퍼스에서 {len(cards)}곳"})
+    external = False
+
+    for _ in range(2):
+        v = judge(q, cards)
+        trace.append({"step": "판단", "detail": f"{v['verdict']} — {v['reason']}"})
+        if v["verdict"] == "충분":
+            break
+        if v["verdict"] == "부족" and v.get("drop"):
+            q2 = _drop_condition(q, v["drop"])
+            if q2 != q:
+                trace.append({"step": "완화", "detail": f"'{v['drop']}' 조건을 빼고 다시 찾음"})
+                out = _search_core(q2, k)
+                cards = out["cards"]
+                trace.append({"step": "재검색", "n": len(cards), "detail": f"{len(cards)}곳"})
+                continue
+        # 무관, 또는 완화해도 소용없음 → 외부 검색(카카오)
+        kcards = _kakao_to_cards(_kakao_search(_kakao_query(q)))
+        if kcards:
+            external = True
+            cards = kcards
+            trace.append({"step": "외부검색", "n": len(cards),
+                          "detail": f"카카오맵에서 {len(cards)}곳"})
+        break
+
+    # 종합
+    if external:
+        intro = f"우리 데이터엔 딱 맞는 곳이 없어서, 카카오맵에서 '{q}' 관련 {len(cards)}곳을 찾았어요."
+    elif cards:
+        ans = synthesize_answer(q, cards)
+        if ans and ans.get("intro"):
+            intro = ans["intro"]
+            reasons = ans.get("reasons") or {}
+            for c in cards:
+                if c["spot_name"] in reasons:
+                    c["reason"] = reasons[c["spot_name"]]
+        else:
+            intro = ""  # 실패 무해 — 프론트가 summary 첫 문장으로 폴백
+    else:
+        intro = f"'{q}'에 맞는 카페를 찾지 못했어요."
+
+    out["cards"] = cards
+    out["intro"] = intro
+    out["agent_trace"] = trace
+    out["external"] = external
+    return out
+
+
+@app.get("/agent")
+def agent(q: str, k: int = 8):
+    """에이전틱 판단 루프 엔드포인트. /search와 같은 응답 계약 + intro/agent_trace/external."""
+    return run_agent(q, k)
 
 @app.get("/photos")
 def photos(name: str, lat: float = None, lng: float = None, place_id: str = None):

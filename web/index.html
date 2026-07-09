@@ -144,6 +144,10 @@
   .namematch{ display:inline-block; font-size:11px; font-weight:600; color:#0071e3; background:#eaf3ff; padding:1px 7px; border-radius:6px; margin-left:6px; vertical-align:middle; white-space:nowrap }
   /* 파도7: 폐업 배지 (closed — 이름 조회 시에만 등장, 지도 마커에선 제외) */
   .closedbadge{ display:inline-block; font-size:11px; font-weight:700; color:#dc2626; background:#fee2e2; padding:1px 7px; border-radius:6px; margin-left:6px; vertical-align:middle; white-space:nowrap }
+  /* 에이전트: 카카오 외부검색 결과 배지 (우리 코퍼스 밖 — 근거 없음을 정직하게 표식) */
+  .extbadge{ display:inline-block; font-size:11px; font-weight:600; color:#b45309; background:#fef3c7; padding:1px 7px; border-radius:6px; margin-left:6px; vertical-align:middle; white-space:nowrap }
+  /* 에이전트: 판단 루프 과정 캡션 (검색→판단→완화/외부검색 — 발표 임팩트) */
+  .agent-trace{ font-size:12px; color:#86868b; margin-top:6px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.01em }
   /* 파도7: 추천 근거 (matched — "왜 이 카페"를 코드가 결정적으로 조립: 지역✓·질의와 겹친 태그·블로거 수. LLM reason의 후임 — 지어낼 수 없는 이유만) */
   .matched{ font-size:12px; font-weight:600; color:#0071e3; margin-top:5px; line-height:1.45 }
   .matched .rok{ color:#16a34a; font-weight:700 }   /* 지역 일치 표식 ✓ */
@@ -274,6 +278,7 @@
       <div class="eyebrow">오늘의 추천</div>
       <h2 id="resultTitle"></h2>
       <p id="resultIntro"></p>
+      <p id="agentTrace" class="agent-trace" style="display:none"></p>
     </div>
     <div class="demo" id="resultTracks" style="max-width:920px"></div>
   </section>
@@ -644,13 +649,15 @@ function makeSetlist(query, cards, region){
 }
 function trackHTML(t){
   const c = t.card;
-  const vid = pickVideo(c);
-  const blogLink = (c.blog_links && c.blog_links[0]) || '';
-  // 영상 있는 카페 = 유튜브 썸네일 / 블로그 근거만 = 그라데이션 (가짜 썸네일 금지)
-  const link = vid ? `https://www.youtube.com/watch?v=${vid}` : (blogLink || '#');
-  const badge = vid ? '▶ 영상' : (blogLink ? '📝 후기' : '');
-  const evidence = `영상 ${c.mention_count}편` + (c.bloggers ? ` · 후기 ${c.bloggers}명` : '');
+  const ext = c.external === true;   // 카카오 외부검색 결과 — 우리 근거(영상·블로그·리뷰) 없음
+  const vid = ext ? '' : pickVideo(c);
+  const blogLink = (!ext && c.blog_links && c.blog_links[0]) || '';
+  // 영상 있는 카페 = 유튜브 썸네일 / 블로그 근거만 = 그라데이션 (가짜 썸네일 금지). 외부=카카오 장소 링크
+  const link = ext ? (c.place_url || '#') : (vid ? `https://www.youtube.com/watch?v=${vid}` : (blogLink || '#'));
+  const badge = ext ? '' : (vid ? '▶ 영상' : (blogLink ? '📝 후기' : ''));
+  const evidence = ext ? '카카오맵 검색 결과' : (`영상 ${c.mention_count}편` + (c.bloggers ? ` · 후기 ${c.bloggers}명` : ''));
   const nameMatch = c.name_match ? '<span class="namematch">📌 이름 일치</span>' : '';   // 확정 매치 배지
+  const extBadge = ext ? '<span class="extbadge">🔍 카카오맵</span>' : '';   // 외부검색 표식 — 우리 데이터 밖(근거 없음)임을 정직하게
   const closedBadge = c.closed ? '<span class="closedbadge">⚠ 폐업한 곳이에요</span>' : '';   // 파도7: 폐업 안내(이름 조회 시만 등장 — 지우면 모르고 찾아가니 안내가 신뢰)
   // 파도7: 추천 근거 — 지어낼 수 없는 것만 조립(지역 일치·질의와 겹친 태그·블로거 수). LLM reason의 후임. 없으면 안 그림.
   const matched = (function(m){
@@ -670,16 +677,16 @@ function trackHTML(t){
   const reviewRate = (c.rating_avg != null)
     ? `<div class="revrate" style="color:${RVTONE[c.review_tone] || '#86868b'}">⭐ ${c.rating_avg}${c.rating_count ? ` · ${c.rating_count}` : ''}</div>` : '';
   // 파도4: '근거 보기' — 실서버 검색 결과에만 (오프라인 mock은 /evidence가 없음)
-  const evBtn = (searchWasLive && t.idx != null)
-    ? `<button class="ev-btn" onclick="openEvidence(${t.idx}, event)">🔍 근거 보기</button>` : '';
+  const evBtn = (searchWasLive && !ext && t.idx != null)
+    ? `<button class="ev-btn" onclick="openEvidence(${t.idx}, event)">🔍 근거 보기</button>` : '';   // 외부(카카오) 결과는 /evidence 없음 → 숨김
   const clk = (t.idx != null);                 // 검색결과 카드만 클릭 가능 (초기 표시 카드는 idx 없음)
-  const hasLink = !!(vid || blogLink);         // 근거 링크(영상/후기) 유무
+  const hasLink = ext ? !!c.place_url : !!(vid || blogLink);         // 근거 링크(영상/후기/카카오장소) 유무
   return `<div class="track${clk ? ' clickable' : ''}"${clk ? ` onclick="focusCafeOnMap(${t.idx})" title="지도에서 위치 보기"` : ''}>
     <a href="${link}" target="_blank" rel="noopener" title="근거 영상/후기 열기" onclick="${hasLink ? 'event.stopPropagation()' : 'event.preventDefault()'}" style="flex:none;display:block;position:relative">
       ${ytThumbHTML(vid, 'thumb')}
       ${badge ? `<span style="position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:10px;font-weight:600;padding:2px 6px;border-radius:6px">${badge}</span>` : ''}
     </a>
-    <div class="body"><div class="tn">${esc(c.spot_name)}${nameMatch}${closedBadge}</div><div class="td">${esc(t.why)}</div>${matched}<div style="font-size:12px;color:#86868b;margin-top:4px">${tags}</div>${evBtn}</div>
+    <div class="body"><div class="tn">${esc(c.spot_name)}${nameMatch}${extBadge}${closedBadge}</div><div class="td">${esc(t.why)}</div>${matched}<div style="font-size:12px;color:#86868b;margin-top:4px">${tags}</div>${evBtn}</div>
     <div class="ev"><div class="n">${evidence}</div>${reviewRate}<div class="k">${esc(c.region)} · ${esc(c.category)}</div></div>
   </div>`;
 }
@@ -687,8 +694,8 @@ function trackHTML(t){
 // 배포/통합서버(프론트+API 한 서버)는 같은 오리진 → 상대경로(''). 로컬에서 프론트만 :8503 으로 띄운 옛 방식만 8000 백엔드로.
 const API_BASE = (location.port === '8503') ? 'http://localhost:8000' : location.origin;  // new URL()은 절대주소 필요 → 배포도 오리진 사용(상대경로 '' 금지, 2026-07-10 버그수정)
 async function apiSearch(query, topK){
-  const r = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}&k=${topK}`,
-                        { signal: AbortSignal.timeout(20000) });   // 파도3 LLM 선별+이유 층: 조건검색 실측 ~6초, 브라우즈(12곳) 8~11초 → 스파이크 여유 20초
+  const r = await fetch(`${API_BASE}/agent?q=${encodeURIComponent(query)}&k=${topK}`,
+                        { signal: AbortSignal.timeout(30000) });   // 에이전틱 판단 루프: LLM 2~4회(판단·완화·종합) — 실측 3~13초, 여유 30초
   if(!r.ok) throw new Error('api '+r.status);
   const d = await r.json();
   // 백엔드가 이미 정렬(name_match 1순위)해서 보냄 — 프론트에서 재정렬·중복제거 금지 (계약 v2)
@@ -714,11 +721,15 @@ async function apiSearch(query, topK){
     address: c.address || '',                  // 파도7: 도로명 주소 (없으면 빈 문자열 → 미표시)
     closed: c.closed === true,                 // 파도7: 폐업 — 이름 조회 시에만 옴. 경고 배지 + 지도 마커 제외
     matched: c.matched || null,                // 파도7: "왜 추천" 결정적 근거 {region?,tags?,bloggers?} — 없으면 null(안 그림)
+    external: c.external === true,             // 에이전트: 카카오 외부검색 결과 — 배지 + 근거보기 숨김(우리 데이터 밖)
+    place_url: c.place_url || '',              // 카카오 장소 URL (external 카드의 링크)
   }));
   // 카드 배열 + 최상위 메타를 함께 반환 — runSearch가 결과 헤더에 사용 (파도3: intro/browse/total, 파도5: filtered)
+  // agent_trace: 판단 루프 과정(검색→판단→완화/외부검색) — 발표용 캡션. external: 이번 답이 카카오 폴백인지
   return { cards, intro: d.intro || '', browse: d.browse === true,
            total: (typeof d.total === 'number' ? d.total : null), region: d.region || '',
-           filtered: (typeof d.filtered === 'number' ? d.filtered : 0) };
+           filtered: (typeof d.filtered === 'number' ? d.filtered : 0),
+           agent_trace: d.agent_trace || [], external: d.external === true };
 }
 // 검색 로딩 스켈레톤 (파도3 LLM 선별 층 붙으면 검색 2~6초 — 빈 화면 대신 자리표시)
 function skeletonHTML(n){
@@ -739,27 +750,39 @@ async function runSearch(query){
   let res, live = true;
   // k=10 (민옥 요청 7/9: 5개는 부족). 브라우즈("애월 카페"류)면 백엔드가 12+로 늘려 보냄 (파도3)
   try { res = await apiSearch(query, 10); }
-  catch(e){ live = false; res = { cards: searchCards(query, 10), intro:'', browse:false, total:null, region:(s_detectRegion(query)||''), filtered:0 }; }   // 백엔드 꺼져 있으면 mock (지역도 자체 감지 — 실서버 res.region과 제목 로직 일치)
+  catch(e){ live = false; res = { cards: searchCards(query, 10), intro:'', browse:false, total:null, region:(s_detectRegion(query)||''), filtered:0, agent_trace:[], external:false }; }   // 백엔드 꺼져 있으면 mock (지역도 자체 감지 — 실서버 res.region과 제목 로직 일치)
   const cards = res.cards;
-  searchWasLive = live;   // '근거 보기' 버튼 노출 여부 (mock엔 /evidence 없음)
+  searchWasLive = live && !res.external;   // '근거 보기' 버튼: 라이브 & 우리 데이터만 (카카오 외부결과엔 /evidence 없음)
   lastCards = cards;      // openEvidence(idx)가 조회
 
-  // 결과 헤더: 브라우즈면 "지역 카페 N곳"(다수결 순), 아니면 코스 문구. intro는 백엔드 LLM 우선.
+  // 결과 헤더: 카카오 폴백 / 브라우즈 / 코스 문구. intro는 백엔드 LLM(에이전트 종합) 우선.
   let title, intro;
-  if (res.browse){
+  if (res.external){       // 에이전트가 내부 침묵 후 카카오맵으로 나간 경우
+    title = `'${query}' — 카카오맵에서 찾았어요`;
+    intro = res.intro || `우리 데이터엔 없어 카카오맵에서 ${cards.length}곳을 찾았어요`;
+  } else if (res.browse){
     const label = res.region || (cards[0] && cards[0].region) || '제주';
     title = res.total ? `${label} 카페 ${res.total}곳` : `${label} 카페 둘러보기`;
     intro = res.intro || `인기순으로 둘러보고 있어요 · ${cards.length}곳 표시`;
   } else {
     const sl = makeSetlist(query, cards, res.region);
     title = sl.title;
-    intro = res.intro || sl.intro;   // 백엔드 LLM intro 우선, 없으면(explain=0·mock) 자체 문구
+    intro = res.intro || sl.intro;   // 백엔드 에이전트 intro 우선, 없으면(mock) 자체 문구
   }
   // 파도5: LLM이 무관 판단으로 제외한 수 — 있으면 캡션으로 정직하게 표기
   if (res.filtered > 0) intro += ` · 관련도 낮은 결과 ${res.filtered}개 제외`;
-  if(!live) intro += ' · (오프라인 데모 — 임베딩 서버 미접속)';
+  if(!live) intro += ' · (오프라인 데모 — 서버 미접속)';
   document.getElementById('resultTitle').textContent = title;
   document.getElementById('resultIntro').textContent = intro;
+  // 에이전트 판단 과정 캡션 — LLM이 어떻게 판단·분기했는지 (발표 임팩트)
+  const traceEl = document.getElementById('agentTrace');
+  if (traceEl){
+    const tr = res.agent_trace || [];
+    if (tr.length){
+      traceEl.textContent = '🤖 ' + tr.map(s => s.step + (s.n!=null ? `(${s.n})` : '')).join('  →  ');
+      traceEl.style.display = '';
+    } else traceEl.style.display = 'none';
+  }
   // 이유(why): 백엔드 reason 우선, 없으면 summary 첫 문장 폴백
   // 파도5: 이름 확정 매치(name_match) 뒤 첫 추천 카드 앞에 '비슷한 카페' 구분선 (배열은 그대로 — 순서 재정렬·제거 아님)
   const firstRec = cards.some(c => c.name_match) ? cards.findIndex(c => !c.name_match) : -1;
