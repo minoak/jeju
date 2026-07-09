@@ -338,7 +338,9 @@ _LLM_SYS = (
     "- 각 카페의 summary/tags/reaction에 적힌 내용만 근거로 쓸 것. 없는 사실을 지어내지 말 것.\n"
     "- reaction은 실제 방문자 댓글 여론이다. 질문과 충돌하면(예: '조용한 카페' 질문인데 자리싸움·혼잡 반응) "
     "순위를 낮추고, 중요한 경고는 reason에 짧게 반영해도 된다. 여론을 미화하지 말 것.\n"
-    "- 질문과 무관한 카페는 picks에서 빼도 된다. 단 name_match=true 카페는 항상 포함.\n"
+    "- picks에 없는 카페는 결과에서 제외된다. 명백히 무관하거나(질문 조건과 불일치) 여론이 질문과 "
+    "정면 충돌하는 카페만 빼고, 확신이 없으면 포함하라. 과도하게 줄이지 말 것. "
+    "단 name_match=true 카페는 항상 포함.\n"
     "- reasons는 근거가 있는 카페만. 이유는 담백하게, 과장 광고체 금지.")
 
 def _llm_annotate(q, cards):
@@ -362,14 +364,19 @@ def _llm_annotate(q, cards):
     d = json.loads(resp.choices[0].message.content or "{}")
     reasons = {int(i): str(v) for i, v in (d.get("reasons") or {}).items() if str(i).isdigit()}
     picks = [i for i in (d.get("picks") or []) if isinstance(i, int) and 0 <= i < len(cards)]
-    # 재배열은 코드가 집행: 이름 매치는 무조건 앞, picks 순서, 누락분은 뒤에 원래 순서로
     for i, c in enumerate(cards):
         if i in reasons:
             c["reason"] = reasons[i]
+    # 집행은 코드가: 이름 매치 무조건 앞. picks가 곧 필터 — 빠진 카드는 제거 (민옥 결정 7/9:
+    # 무관 결과 컷은 점수 임계값이 아니라 LLM 판단으로). picks가 비면 판단 실패로 보고 전부 유지.
     front = [i for i, c in enumerate(cards) if c.get("name_match")]
-    rest = [i for i in picks if i not in front] + [i for i in range(len(cards))
-                                                  if i not in picks and i not in front]
-    return str(d.get("intro") or ""), [cards[i] for i in front + rest]
+    if picks:
+        kept = front + [i for i in picks if i not in front]
+        dropped = len(cards) - len(kept)
+    else:
+        kept = front + [i for i in range(len(cards)) if i not in front]
+        dropped = 0
+    return str(d.get("intro") or ""), [cards[i] for i in kept], dropped
 
 
 # ---- /evidence: 질의 키워드 → 원문 근거 (블로그 스니펫 인용 + 쇼츠 댓글 반응) ----
@@ -576,18 +583,20 @@ def search(q: str, k: int = 8, explain: int = 1):
                       "reaction_hint": a.get("reaction_hint", ""),
                       "lat": a.get("lat"), "lng": a.get("lng")})
 
-    # [2.5+3] LLM 선별+이유 — 브라우즈는 지분 순서 유지(주석만), 조건 질의는 재정렬 허용
+    # [2.5+3] LLM 선별+이유 — 브라우즈는 지분 순서 유지(주석만·제거 없음), 조건 질의는 재정렬+무관 제거
     intro = ""
+    filtered = 0
     if explain and cards:
         try:
-            intro, annotated = _llm_annotate(q, cards)
+            intro, annotated, dropped = _llm_annotate(q, cards)
             if not browse:
                 cards = annotated
+                filtered = dropped
         except Exception as e:
             print(f"[server] LLM 주석 실패 (검색은 무사): {type(e).__name__}: {e}")
 
     return {"query": q, "region": region, "relaxed": relaxed, "browse": browse,
-            "total": total, "intro": intro, "cards": cards}
+            "total": total, "intro": intro, "filtered": filtered, "cards": cards}
 
 @app.get("/photos")
 def photos(name: str, lat: float = None, lng: float = None, place_id: str = None):

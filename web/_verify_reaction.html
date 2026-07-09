@@ -1,0 +1,94 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>reaction 뱃지 격리 검증</title>
+<style>
+:root{ --panel:#f5f5f7; --accent:#0071e3; --sub:#515154; --pt:-apple-system,BlinkMacSystemFont,'Segoe UI','Apple SD Gothic Neo',sans-serif }
+body{ font-family:var(--pt); background:#fff; color:#1d1d1f; max-width:820px; margin:24px auto; padding:0 18px }
+h1{ font-size:20px } .cap{ font-size:13px; color:#6e6e73; margin:2px 0 14px }
+/* ↓ web/index.html 원본에서 복사한 카드 CSS */
+.track{ display:flex; gap:18px; align-items:center; background:var(--panel); border-radius:16px; padding:14px 16px; margin-top:12px }
+.track .thumb{ width:130px; height:84px; flex:none; border-radius:12px; overflow:hidden }
+.ytthumb{ position:relative; overflow:hidden; background:var(--panel) }
+.ytthumb img{ width:100%; height:100%; object-fit:cover; display:block; opacity:0; transition:opacity .3s }
+.ytthumb:not(.loading) img{ opacity:1 }
+.ytthumb.failed{ background:linear-gradient(135deg,#8ec5ff,#5b8def) }
+.ytthumb .spin{ position:absolute; inset:0; margin:auto; width:22px; height:22px; border:3px solid rgba(0,0,0,.12); border-top-color:var(--accent); border-radius:50%; animation:ytspin .7s linear infinite }
+.ytthumb:not(.loading) .spin{ display:none }
+@keyframes ytspin{ to{ transform:rotate(360deg) } }
+.track .body{ flex:1; min-width:0 }
+.track .body .tn{ font-size:19px; font-weight:600; letter-spacing:-.01em; margin-bottom:3px }
+.track .body .td{ font-size:14px; color:var(--sub); line-height:1.45 }
+.track .ev{ flex:none; text-align:right }
+.track .ev .n{ font-size:13px; font-weight:600; color:var(--accent) }
+.track .ev .k{ font-size:12px; color:#86868b; margin-top:2px }
+.namematch{ display:inline-block; font-size:11px; font-weight:600; color:#0071e3; background:#eaf3ff; padding:1px 7px; border-radius:6px; margin-left:6px; vertical-align:middle; white-space:nowrap }
+</style></head><body>
+<h1>🍊 reaction 뱃지 + MV 썸네일 격리 검증</h1>
+<p class="cap">web/index.html의 실제 esc / pickVideo / ytThumbHTML / trackHTML(수정본)을 그대로 복사. 데이터는 백엔드 실측값.</p>
+<div id="out"></div>
+<script>
+// ══ web/index.html에서 그대로 복사 (드리프트 방지: 원본과 동일해야 유효) ══
+function esc(s){ return (s==null?'':(''+s)).replace(/[&<>"]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+function pickVideo(card){ const v = (card && card.video_ids) || []; return v.length ? v[Math.floor(Math.random() * v.length)] : ''; }
+function ytThumbHTML(vid, cls, sizeStyle){
+  cls = cls || ''; const st = sizeStyle ? ` style="${sizeStyle}"` : '';
+  if(!vid) return `<div class="ytthumb failed ${cls}"${st}></div>`;
+  return `<div class="ytthumb loading ${cls}"${st}><div class="spin"></div>`
+    + `<img src="https://img.youtube.com/vi/${vid}/mqdefault.jpg" alt=""`
+    + ` onload="this.parentNode.classList.remove('loading')"`
+    + ` onerror="this.parentNode.classList.remove('loading');this.parentNode.classList.add('failed');this.remove()"></div>`;
+}
+function trackHTML(t){
+  const c = t.card;
+  const vid = pickVideo(c);
+  const blogLink = (c.blog_links && c.blog_links[0]) || '';
+  const link = vid ? `https://www.youtube.com/watch?v=${vid}` : (blogLink || '#');
+  const badge = vid ? '▶ 영상' : (blogLink ? '📝 후기' : '');
+  const evidence = `영상 ${c.mention_count}편` + (c.bloggers ? ` · 후기 ${c.bloggers}명` : '');
+  const nameMatch = c.name_match ? '<span class="namematch">📌 이름 일치</span>' : '';
+  const tags = (c.tags||[]).slice(0,3).map(x=>'#'+esc(x)).join(' ');
+  const caution = (c.caution && c.caution.length)
+    ? `<div style="font-size:12px;color:#c2410c;margin-top:5px">⚠ ${c.caution.map(esc).join(' · ')}</div>` : '';
+  const hours = c.hours_hint
+    ? `<div style="font-size:12px;color:#86868b;margin-top:3px">🕒 ${esc(c.hours_hint)} <span style="color:#a1a1aa">· 참고용</span></div>` : '';
+  // 파도2 여론: 쇼츠 댓글 톤 뱃지(긍정😊/혼합😐/부정😞) + 한 줄 — 톤 없으면 안 그림, 부정·혼합도 그대로 노출(신뢰가 컨셉)
+  const RTONE = { '긍정':{e:'😊',c:'#16a34a'}, '혼합':{e:'😐',c:'#a16207'}, '부정':{e:'😞',c:'#dc2626'} };
+  const rt = RTONE[c.reaction_tone];
+  const reaction = rt
+    ? `<div style="font-size:12px;color:${rt.c};margin-top:5px">${rt.e} 여론 ${esc(c.reaction_tone)}${c.reaction_hint ? ` <span style="color:#86868b">· ${esc(c.reaction_hint)}</span>` : ''}</div>` : '';
+  return `<div class="track">
+    <a href="${link}" target="_blank" rel="noopener" title="근거 보기" style="flex:none;display:block;position:relative">
+      ${ytThumbHTML(vid, 'thumb')}
+      ${badge ? `<span style="position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);color:#fff;font-size:10px;font-weight:600;padding:2px 6px;border-radius:6px">${badge}</span>` : ''}
+    </a>
+    <div class="body"><div class="tn">${esc(c.spot_name)}${nameMatch}</div><div class="td">${esc(t.why)}</div><div style="font-size:12px;color:#86868b;margin-top:4px">${tags}</div>${reaction}${caution}${hours}</div>
+    <div class="ev"><div class="n">${evidence}</div><div class="k">${esc(c.region)} · ${esc(c.category)}</div></div>
+  </div>`;
+}
+// ══ 백엔드 실측 데이터 기반 mock 카드 (떼르떼·안티코는 실제 video_id) ══
+const CARDS = [
+  { spot_name:'떼르떼', name_match:true, region:'노형', category:'카페', mention_count:1, bloggers:12,
+    tags:['빙수','디저트'], video_ids:['_pFIC1zVNos'], blog_links:[],
+    reaction_tone:'긍정', reaction_hint:'떼르떼의 요거트빙수 양이 많고 아이스크림 맛이 좋다는 긍정 평가, 노형동 인기.',
+    caution:[], hours_hint:'', reason:'요거트빙수 양과 맛이 호평받는 노형동 인기 카페. (신규 발굴 · MV 트랙)' },
+  { spot_name:'안티코', name_match:true, region:'선흘', category:'카페', mention_count:1, bloggers:4,
+    tags:['정원','디저트'], video_ids:['F-WNDWp1tL4'], blog_links:[],
+    reaction_tone:'긍정', reaction_hint:'엔틱하고 동화 같은 분위기, 야외정원과 디저트를 칭찬하며 방문 의향.',
+    caution:[], hours_hint:'', reason:'동화 같은 정원이 있는 선흘 신상 카페. (신규 발굴 · MV 트랙)' },
+  { spot_name:'제주당(혼합 예시)', name_match:false, region:'구좌', category:'카페', mention_count:3, bloggers:20,
+    tags:['베이커리','웨이팅'], video_ids:['_pFIC1zVNos'], blog_links:[],
+    reaction_tone:'혼합', reaction_hint:'자리 확보가 매우 어렵고(대기·자리싸움), 빵 평은 엇갈리나 음료는 가격 대비 만족.',
+    caution:['웨이팅','주차'], hours_hint:'매일 10:00~19:00', reason:'대기 감수하면 음료 만족도 높은 베이커리 카페.' },
+  { spot_name:'부정 예시 카페', name_match:false, region:'애월', category:'카페', mention_count:2, bloggers:5,
+    tags:['오션뷰'], video_ids:[], blog_links:['https://blog.example'],
+    reaction_tone:'부정', reaction_hint:'댓글 다수가 불친절한 응대와 높은 가격을 지적하며 재방문 의향이 낮음.',
+    caution:[], hours_hint:'', reason:'뷰는 좋지만 서비스 불만이 반복 언급됨. (블로그 후기 트랙)' },
+  { spot_name:'무반응 예시 카페', name_match:false, region:'성산', category:'카페', mention_count:1, bloggers:2,
+    tags:['조용'], video_ids:['F-WNDWp1tL4'], blog_links:[],
+    reaction_tone:'', reaction_hint:'', caution:[], hours_hint:'', reason:'reaction 빈 값 → 뱃지 미표시 확인용.' },
+  { spot_name:'중립 예시 카페', name_match:false, region:'한림', category:'카페', mention_count:1, bloggers:3,
+    tags:['뷰'], video_ids:[], blog_links:[],
+    reaction_tone:'중립', reaction_hint:'댓글은 위치 문의와 영상 자체에 대한 반응이 주.',
+    caution:[], hours_hint:'', reason:'★ 중립 톤 — 현재 매핑(긍정/혼합/부정)에 없어 미표시. 민옥 확인 필요.' },
+];
+document.getElementById('out').innerHTML = CARDS.map(c => trackHTML({ card:c, why:(c.reason || '') })).join('');
+</script></body></html>
