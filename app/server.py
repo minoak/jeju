@@ -35,6 +35,11 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 
+try:
+    from app import tagdict  # 태그 사전 (synonym 번역 — 어휘 매칭 게이트용)
+except ImportError:
+    import tagdict
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---- 키 로딩: 로컬은 .env 파일, 배포(Render 등)는 프로세스 환경변수 ----
@@ -181,6 +186,43 @@ def _terms(q):
         out.append(sorted(stems, key=len))
     return out
 
+# ---- 어휘 매칭 게이트: 조건어가 카드 근거(태그·synonym·요약)에 실재하는가 ----
+# 임베딩은 짧은 "X 카페" 쿼리에서 유사도가 공통어 "카페"에 지배돼 무관 쿼리(승마·노래방)도
+# top을 채운다 (실측 2026-07-10: 노래방 0.244 > 오션뷰 0.209). 그래서 관련성의 기준을
+# 유사도가 아니라 "조건어가 근거에 실제로 있는가"로 둔다 — 근거가 하나도 없으면 침묵.
+# = 결정 6 "승마클럽 사건(표면 토큰 함정)"의 임베딩층 재현 방어. LLM 재작성의 코드 후임.
+_SYN2TAG = {}  # 정규화 표현 → 정규 태그 집합 (tag 자신 + synonyms). 강아지 → {애견동반}
+for _tg in tagdict.active_tags():
+    _SYN2TAG.setdefault(_norm(_tg), set()).add(_tg)
+    for _sy in tagdict.synonyms_of(_tg):
+        _SYN2TAG.setdefault(_norm(_sy), set()).add(_tg)
+
+def _grounded(canon, term_groups):
+    """카페 카드에 조건어(term_groups)가 근거로 실재하면 True (하나라도 있으면 = OR).
+    3경로: (a) synonym→정규태그 번역 후 카드 태그와 대조 (강아지→애견동반),
+           (b) 조건어가 카드 태그에 부분매칭 (오션뷰·노을 등 원명이 곧 태그),
+           (c) 조건어가 요약 본문에 등장 (베이글·밀크티 등 태그 사전 밖 유효조건)."""
+    c = CARDS.get(canon)
+    if not c:
+        return False
+    tags_norm = set(_norm(t) for t in (c.get("tags") or []))
+    summ = c.get("summary") or ""
+    for group in term_groups:
+        want = set()
+        for s in group:
+            for w in _SYN2TAG.get(_norm(s), ()):
+                want.add(_norm(w))
+        if want & tags_norm:                                    # (a)
+            return True
+        for s in group:                                         # (b)
+            sn = _norm(s)
+            if len(sn) >= 2 and any(sn in tn for tn in tags_norm):
+                return True
+        for s in group:                                         # (c)
+            if len(s) >= 2 and s in summ:
+                return True
+    return False
+
 # ---- 결정적 근거: "왜 이 카페인가"를 코드가 조립 (LLM reason의 후임) ----
 # 지어낼 수 없는 이유만: 질의와 겹친 태그 + 지역 일치 + 다수결(고유 블로거 수).
 def match_info(q, card, want_b, want_f):
@@ -274,27 +316,36 @@ def _load_snippets():
     global _SNIPPETS, _REACTIONS, _REVIEWS
     if _SNIPPETS is not None:
         return
-    snip = {}
-    for raw_name in ("네이버 크롤링.jsonl", "네이버 재검색 크롤링.jsonl"):
-        p = os.path.join(ROOT, "data", "raw", raw_name)
-        if not os.path.exists(p):
-            continue
-        for line in open(p, encoding="utf-8", errors="replace"):
-            try:
-                rec = json.loads(line)
-            except Exception:
+    # 스니펫: pre-index(evidence_snippets.json) 우선 로드 — 57MB 원본 런타임 파싱 회피.
+    # Render 무료 티어에서 첫 /evidence 17.6초→<1초 (2026-07-10). pipeline/build_evidence_index.py 산출.
+    _idx = os.path.join(ROOT, "data", "processed", "evidence_snippets.json")
+    if os.path.exists(_idx):
+        _SNIPPETS = json.load(open(_idx, encoding="utf-8"))
+        print(f"[server] 근거 스니펫: pre-index {sum(len(v) for v in _SNIPPETS.values())}건/{len(_SNIPPETS)}카페")
+    else:
+        # 폴백: 원본 직접 파싱 (로컬·pre-index 미생성 시). ⚠️ 매칭 규칙은 build_evidence_index.py 와 동일하게 유지.
+        snip = {}
+        for raw_name in ("네이버 크롤링.jsonl", "네이버 재검색 크롤링.jsonl"):
+            p = os.path.join(ROOT, "data", "raw", raw_name)
+            if not os.path.exists(p):
                 continue
-            key = _norm(rec.get("cleaned_name") or rec["spot_name"])
-            canon = ALIAS2CANON.get(rec["spot_name"], rec["spot_name"])
-            rows = []
-            for it in rec.get("blog", {}).get("items", []):
-                txt = _clean(it.get("title", "") + " " + it.get("description", ""))
-                if key and key in _norm(txt) and it.get("postdate", "") >= "20240101":
-                    rows.append({"t": txt, "date": it.get("postdate", ""),
-                                 "blogger": it.get("bloggername", ""), "link": it.get("link", "")})
-            if rows:
-                snip.setdefault(canon, []).extend(rows)
-    _SNIPPETS = snip
+            for line in open(p, encoding="utf-8", errors="replace"):
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                key = _norm(rec.get("cleaned_name") or rec["spot_name"])
+                canon = ALIAS2CANON.get(rec["spot_name"], rec["spot_name"])
+                rows = []
+                for it in rec.get("blog", {}).get("items", []):
+                    txt = _clean(it.get("title", "") + " " + it.get("description", ""))
+                    if key and key in _norm(txt) and it.get("postdate", "") >= "20240101":
+                        rows.append({"t": txt, "date": it.get("postdate", ""),
+                                     "blogger": it.get("bloggername", ""), "link": it.get("link", "")})
+                if rows:
+                    snip.setdefault(canon, []).extend(rows)
+        _SNIPPETS = snip
+        print(f"[server] 근거 스니펫: 원본 파싱 폴백 {sum(len(v) for v in snip.values())}건 (pre-index 없음)")
     rx = {}
     p = os.path.join(ROOT, "data", "processed", "댓글 정제.jsonl")
     if os.path.exists(p):
@@ -323,7 +374,7 @@ def _load_snippets():
                 canon = ALIAS2CANON.get(r["spot_name"], r["spot_name"])
                 rv.setdefault(canon, []).extend(r["reviews"])
     _REVIEWS = rv
-    print(f"[server] 근거 인덱스: 스니펫 {sum(len(v) for v in snip.values())}건/{len(snip)}카페, "
+    print(f"[server] 근거 인덱스: 스니펫 {sum(len(v) for v in _SNIPPETS.values())}건/{len(_SNIPPETS)}카페, "
           f"반응 {len(rx)}편, 카카오리뷰 {sum(len(v) for v in rv.values())}건/{len(rv)}카페")
 
 def _pick_review_quotes(reviews, terms, limit=3):
@@ -454,6 +505,16 @@ def search(q: str, k: int = 8, explain: int = 0, debug: int = 0):
         for canon in pinned:
             s = spots.pop(canon, None) or {"sources": SERVING.get(canon, [])}
             ordered.append((canon, 1.0, s["sources"], True))  # 확정 매치는 유사도가 아니라 1.0 고정
+
+        # 어휘 매칭 게이트: 조건어가 근거에 실재하는 카페만 남긴다 (임베딩 유사도는 순위로 강등).
+        # pinned(이름 조회)는 예외 — 이미 ordered로 분리됨. 조건어 없으면 게이트 비활성(통과).
+        # 전멸 시 pool=0 → 지역완화(relaxed)도 0 → cards 빈 배열 → 프론트가 "못 찾았어요"로 침묵.
+        term_groups = _terms(q)
+        gated = 0
+        if term_groups:
+            before = len(spots)
+            spots = {n: s for n, s in spots.items() if _grounded(n, term_groups)}
+            gated = before - len(spots)
 
         # 지역 필터 (카드 확정값 기준, 단계 완화: 세부 → 버킷 → 전체)
         def bf(n):
