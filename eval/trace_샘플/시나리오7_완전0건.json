@@ -1,0 +1,65 @@
+{
+  "query": "우도에서 강아지랑 갈 수 있는 노키즈존 카페",
+  "intent": {
+    "유형": "조건검색",
+    "지역": "우도",
+    "하드": [
+      "애견동반",
+      "노키즈존"
+    ],
+    "소프트": [],
+    "배제": []
+  },
+  "translation": [
+    {
+      "input": "강아지랑",
+      "tag": "애견동반",
+      "method": "exact",
+      "score": 1.0
+    },
+    {
+      "input": "노키즈존",
+      "tag": "노키즈존",
+      "method": "exact",
+      "score": 1.0
+    }
+  ],
+  "unresolved": [],
+  "funnel": [
+    {
+      "stage": "전체",
+      "n": 663
+    },
+    {
+      "stage": "region:우도",
+      "n": 26
+    },
+    {
+      "stage": "hard:애견동반+노키즈존",
+      "n": 0
+    },
+    {
+      "stage": "relax:지역확장 성산",
+      "n": 0
+    }
+  ],
+  "relaxation": [
+    {
+      "action": "region_expand",
+      "condition": "우도",
+      "label": "성산까지 넓혀서 찾았어요"
+    }
+  ],
+  "region_expanded": null,
+  "results": [],
+  "k": 8,
+  "router_method": "llm",
+  "quote_violations": [],
+  "answer": {
+    "intro": "조건에 맞는 카페를 찾지 못했어요.",
+    "reasons": {},
+    "notice": "이렇게도 찾아봤지만 결과가 없었어요: 성산까지 넓혀서 찾았어요 지역을 넓히거나 조건을 하나 줄여서 다시 검색해 보세요.",
+    "honest_zero": true,
+    "fallback": false
+  }
+}
