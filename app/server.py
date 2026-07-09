@@ -747,7 +747,7 @@ def run_agent(q, k=8):
     trace.append({"step": "검색", "n": len(cards), "detail": f"내부 코퍼스에서 {len(cards)}곳"})
     external = False
 
-    for _ in range(2):
+    for attempt in range(2):
         v = judge(q, cards)
         # 검토: 질문과 연관 있는 카페만 남긴다 (LLM이 부적합 판정한 건 삭제 — "있는 걸 검토")
         # keep 이름에 LLM이 '(지역)'을 덧붙이는 경우가 있어 괄호를 떼고 대조한다.
@@ -760,9 +760,10 @@ def run_agent(q, k=8):
                                         f"(부적합 {len(cards) - len(kept)}곳 삭제)"})
             cards = kept
         trace.append({"step": "판단", "detail": f"{v['verdict']} — {v['reason']}"})
-        if v["verdict"] == "충분":
+        if v["verdict"] == "충분" and cards:
             break
-        if v["verdict"] == "부족" and v.get("drop"):
+        # 완화는 첫 시도에서만 (선호 조건 하나 빼고 재검색). 완화 후에도 안 맞으면 아래서 카카오로.
+        if attempt == 0 and v["verdict"] == "부족" and v.get("drop"):
             q2 = _drop_condition(q, v["drop"])
             if q2 != q:
                 trace.append({"step": "완화", "detail": f"'{v['drop']}' 조건을 빼고 다시 찾음"})
@@ -770,13 +771,15 @@ def run_agent(q, k=8):
                 cards = out["cards"]
                 trace.append({"step": "재검색", "n": len(cards), "detail": f"{len(cards)}곳"})
                 continue
-        # 무관, 또는 완화해도 소용없음 → 외부 검색(카카오)
+        # 무관, 완화 불가, 또는 완화해도 연관 0 → 외부 검색(카카오, 카페만). 그것도 없으면 침묵.
         kcards = _kakao_to_cards(_kakao_search(_kakao_query(q)))
         if kcards:
             external = True
             cards = kcards
             trace.append({"step": "외부검색", "n": len(cards),
                           "detail": f"카카오맵에서 {len(cards)}곳"})
+        else:
+            cards = []  # 완화 재검색으로 딸려온 무관 결과를 남기지 않는다 — 정직한 침묵
         break
 
     # 종합
